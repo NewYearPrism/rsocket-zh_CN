@@ -7,4 +7,4 @@
 （commit 0f6e5554a5f9abbb1c6c7ec2138d2f3e0ab280e8 on 2023-05-02）
 
 ## 进度
-- [常见问题 - FAQ.md](./zh_CN/FAQ.md) *60%*
+- [常见问题 - FAQ.md](./zh_CN/FAQ.md) *99%*

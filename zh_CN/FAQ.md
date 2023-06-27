@@ -155,69 +155,67 @@ HTTP/2 可用的代理，RSocket 也可用。
 
 TCP 流量控制的目的是通过远程端的消费速率来控制发送端/接收端的字节速率。使用 RSocket 时，我们会复用同一 TCP 连接建立多条数据流，所以 RSocket 协议层必须要拥有自己的流量控制。
 
-#### What are example use cases where RSocket flow control helps?
+#### 有没有 RSocket 流控发挥作用的例子？
 
-Flow control helps an application signal its capability to consume responses. This ensures that we never overflow any queue on the application layer.
-Relying on the TCP flow control doesn't work, because we multiplex the streams on the same connection.
+应用程序通过流控机制指示其消费响应数据的能力大小，保证了我们不会挤爆应用层的任何队列。我们没办法依赖 TCP 的流控，原因还是多路复用。
 
-#### How does RSocket flow control behave?
+#### RSocket 的流控长什么样？
 
-There are two types of flow control: 
+有两种类型：
 
-- One is provided by the request-n semantics defined in Reactive Streams (please [read the spec][Reactive Streams] for exhaustive details).
-- The second is provided via the lease semantics defined in the [Protocol document](https://github.com/rsocket/rsocket/blob/master/Protocol.md#lease-semantics).
+- 反应式流的N个请求(request-n)语义（详情请阅读[规范](http://www.reactive-streams.org)）
+- 本协议的[租约(lease)语义](./Protocol.md#lease-semantics)
 
-#### How does RSocket benefit a client-side load balancer in a data center?
+#### RSocket 对数据中心的客户端负载均衡器有什么好处？
 
-Each RSocket provides an availability number abstractly representing its capacity to send traffic.
-For instance, when a client doesn't have a valid lease, it exposes a "0.0" availability indicating that it can't send any traffic. This extra piece of information, in combination with any load balancing strategy already used, give more information to the client to make smarter decisions.
+每个 RSocket 连接都提供一个可用性指标以指示其发送数据的能力。例如，一个未持有有效租约的客户端会显现出“0.0”可用性，表示它不具有任何发送消息的能力。这个额外的指标信息，与其他负载均衡策略一同帮助客户端做出更智能的决定。
 
-#### Why is multiplexing more efficient?
+#### 为什么多路复用更高效？
 
 - <https://http2.github.io/faq/#why-is-http2-multiplexed>
 - <https://http2.github.io/faq/#why-just-one-tcp-connection>
 
-#### Is multiplexing equivalent to pipelining?
+#### 多路复用是否等价于流水线？
 
-No, pipelining requires reading the responses in the order of the requests. 
+不，流水线要求读取响应的顺序和请求的顺序一致。
 
-For example, with pipelining: a client sends `reqA`, `reqB`, `reqC`. It has to receive the responses in this order: `respA`, `respB`, `respC`.
+例如，在流水线上：如果一个客户端发送了 `reqA`，`reqB`，`reqC`，那么它必须以 `respA`，`respB`，`respC` 的顺序收到响应。
 
-With multiplexing, the same client can receive responses in any order, e.g. `respB`, `respA`, `respC`.
+多路复用时，上文的客户端可以以任何顺序收到响应（比如 `respB`，`respA`，`respC`）。
 
-Pipelining can introduce [head-of-line-blocking](https://en.wikipedia.org/wiki/Head-of-line_blocking) and degrade the performance of the system.
+流水线可能导致[队头阻塞](https://en.wikipedia.org/wiki/Head-of-line_blocking)而降低整个系统的性能。
 
-#### Why is the "TLS False start" strategy useful for establishing a connection?
+#### 为什么 TLS False start 策略在建立连接时很好用？
 
-When respecting the lease semantics, establishing a RSocket between a client and a server require one round-trip (-> SETUP, <- LEASE, -> REQUEST). On slow network or when the connection latency is important, this round-trip is harmful. That's why you have the possibility to not respect the lease, and then can send your request right away (-> SETUP, -> REQUEST).
+遵守租约语义时，在客户端和服务端之间建立一个 RSocket 连接需要一个往返(round-trip)（-> SETUP，<- LEASE，-> REQUEST）。在网速很慢或对延迟非常敏感的情况下，往返是不利的。为此，你可以选择不遵守租约，直接发送请求（-> SETUP，-> REQUEST）。
 
-#### What are example use cases for payload data on the Setup frame?
+#### 有没有在 Setup 帧上附加有效数据的使用例？
 
-You may want to pass data to your application at RSocket establishment, rather than reimplementing a connect protocol on top of RSocket, RSocket provides you the possibility to send information alongside the SETUP frame.
-For instance, this can be used by a client to send its credentials.
+你可能想要在 RSocket 连接建立的过程中向应用程序传递数据，而不是在 RSocket 上重新实现一个连接协议，为此 RSocket 提供了与 SETUP 帧一同发送数据的能力。例如，客户端可以趁此发送证书。
 
-#### Why multiple interaction models?
+#### 为什么有多个交互模型？
 
-The interaction models could be reduced to just one "request-channel". Every other interaction model is a subtype of request-channel, but they have been specialized for two reasons:
+这几个交互模型完全可以简化成同一个模型——“请求-通道(request-channel)”，其他的交互模型可以看作请求-通道模型的子类型，但还是被专门确立下来了，原因有：
 
-- Ease of use from the client point of view.
-- Performance.
+- 简化客户端的使用
+- 性能
 
-#### So why the "RSocket" name? 
 
-It started out as ReactiveSocket, but was shortened to RSocket:
+#### 所以说，为什么名字叫 “RSocket”？
 
-- because it is shorter to write and speak
-- to stop overusing the word "reactive" 
+其实最初叫 ReactiveSocket，后来简化成了 RSocket：
 
-That said, the "R" still refers to "reactive" from "ReactiveSocket", so ... isn't "Reactive" a totally [hyped](http://www.gartner.com/technology/research/methodologies/hype-cycle.jsp) buzzword? 
+- 因为读起来和写起来更简短
+- 也为了阻止“反应式(reactive)”一词的过度使用
 
-Unfortunately the word has become quite a buzzword, and overused.
+尽管如此，“R”仍然指代“ReactiveSocket”里的“reactive”。呃，“反应式”难道不是一个被过度[炒作](http://www.gartner.com/technology/research/methodologies/hype-cycle.jsp)的时髦术语吗？
 
-However, this library is directly related to several projects where "Reactive" is an important part of their name and architectural pattern. Specifically, RSocket implements, uses, or follows the principles in these projects and libraries, thus the name. 
+不幸地，这词儿确实已经过于时髦，被过度滥用了。
 
-[Reactive Streams]: http://www.reactive-streams.org
-[Reactive Extensions]: http://www.reactivex.io
-[RxJava]: https://github.com/ReactiveX/RxJava
-[RxJS]: https://github.com/ReactiveX/RxJS
-[Reactive Manifesto]: http://www.reactivemanifesto.org
+但是，本仓库涉及到一些项目，“反应式”是它们的名字和架构模式的重要组成部分。具体来说，RSocket 实现，使用，或遵循了这些项目和代码库中的准则和原理，名称也不例外。
+
+Reactive Streams: http://www.reactive-streams.org<br/>
+Reactive Extensions: http://www.reactivex.io<br/>
+RxJava: https://github.com/ReactiveX/RxJava<br/>
+RxJS: https://github.com/ReactiveX/RxJS<br/>
+Reactive Manifesto: http://www.reactivemanifesto.org<br/>
