@@ -9,8 +9,8 @@
 - 除了请求/响应(request/response)模型之外更多的交互模型，例如流式响应和推送(streaming responses and push)
 - 在不同的网络边界上(across network boundaries)的应用层流量控制语义 (异步的有限大小的批处理拉取/推送(async pull/push of bounded batch sizes))
 - 对单一连接进行二进制(binary)多路复用（译者留言：不是很明白此处binary的含义）
-- 在不同的传输层连接上(across transport connections)支持长时间订阅的可恢复性(resumption)
-- 需要一个应用层协议来使用各种传输层协议，例如 WebSockets 和 [Aeron]: https://github.com/real-logic/Aeron （译者留言：原文就是这么写的。。）
+- 在不同的传输层连接上(across transport connections)支持长时间订阅的恢复(resumption)
+- 需要一个应用层协议来使用各种传输层协议，例如 WebSockets 和 [Aeron]: https://github.com/real-logic/Aeron 
 
 #### 为什么不用 某某技术 将就一下呢？
 
@@ -22,11 +22,11 @@
 
 从 HTTP/2规范 和 常见问题 摘录了一些文字，以方便大家了解 HTTP/2 针对的方向:
 
-> “HTTP's existing semantics remain unchanged.” HTTP已存在的语义没有改变
+> HTTP已存在的语义没有改变
 
-> “… from the application perspective, the features of the protocol are largely unchanged …” 在应用的角度，协议的特性很大程度上没有改变
+> 在应用的角度，协议的特性很大程度上没有改变
 
-> "This effort was chartered to work on a revision of the wire protocol – i.e., how HTTP headers, methods, etc. are put “onto the wire”, not change HTTP’s semantics." （略）
+> "This effort was chartered to work on a revision of the wire protocol – i.e., how HTTP headers, methods, etc. are put “onto the wire”, not change HTTP’s semantics." 
 
 Additionally, "push promises" are focused on filling browser caches for standard web browsing behavior: （译者留言：不懂）
 
@@ -42,17 +42,17 @@ HTTP/2 作为 “更好的 HTTP/1.1”，主要用于浏览器从网站检索文
 
 QUIC 生态目前还比较荒芜。（译者注：这段应该是2015年左右写的。）如果 QUIC 有所发展，我们希望可以将 QUIC 用作 RSocket 的传输层。
 
-其实 RSocket 就是计划专门建立在像 QUIC 这样的传输层之上的。QUIC 提供了可靠的传输(reliable transport)，拥塞控制(congestion control)，字节级别的流量控制(byte-level flow control)，和多路复用字节流(multiplexed byte streams)。RSocket 在此之上建立各种机制，包括二进制帧封装(binary framing)和消息流（单向和双向）(message streams (unidirectional and bidirectional))，消息级别的流量控制(message-level flow control)，可恢复性(resumption)等行为语义。
+其实 RSocket 就是计划专门建立在像 QUIC 这样的传输层之上的。QUIC 提供了可靠的传输(reliable transport)，拥塞控制(congestion control)，字节级别的流量控制(byte-level flow control)，和多路复用字节流(multiplexed byte streams)。RSocket 在此之上建立各种机制，包括二进制帧封装(binary framing)和消息流（单向和双向）(message streams (unidirectional and bidirectional))，消息级别的流量控制(message-level flow control)，恢复(resumption)等行为语义。
 
 RSocket 规范是在考虑了分层的情况下制定的，因此，在类似 TCP 的协议上，RSocket 会包含帧长度(frame length)和流标识(stream ID)。但如果在 HTTP/2 或 QUIC 上，RSocket 就可以直接使用 HTTP/2 或 QUIC 提供的相关机制而不需要自己处理。
 
 请看 ["帧封装格式"](./Protocol.md):
 
-> When using a transport protocol that does not provide compatible framing, the Frame Length MUST be prepended to the RSocket Frame. 如果使用的传输协议没有提供兼容的帧封装机制，则 RSokcet 帧**必须**(MUST)在前部附加帧长度数据。
+> 如果使用的传输协议没有提供兼容的帧封装机制，则 RSokcet 帧**必须**(MUST)在前部附加帧长度数据。
 
 以及 ["帧标头格式"](./Protocol.md): …
 
-> Transport protocols that include demultiplexing, such as HTTP/2, MAY omit the Stream ID field if all parties agree. The means of negotiation and agreement is left to the transport protocol. 像 HTTP/2 这样支持多路分解的传输协议，在双方同意的情况下，**可以**(MAY)省略流标识字段。
+> 像 HTTP/2 这样支持多路分解的传输协议，在双方同意的情况下，**可以**(MAY)省略流标识字段。
 
 #### 为什么要使用 反应式流("Reactive Streams") `request(n)` 流量控制？
 
