@@ -1,244 +1,221 @@
-## Motivations
+## 动机
 
-Large distributed systems are often implemented in a modular fashion by different teams using a variety of technologies and programming languages. The pieces need to communicate reliably and support rapid, independent evolution. Effective and scalable communication between modules is a crucial concern in distributed systems. It significantly affects how much latency users experience and the amount of resources required to build and run the system. 
+大型分布式系统通常以一种模块化的方式实现，往往涉及多个不同的团队，他们使用的技术和编程语言也形形色色。各个组件之间不仅需要可靠地通信，还需要快速、各自独立地更新换代。模块之间高效和易于扩展的通信是分布式系统中备受关注的问题。它显著影响着用户感受到的延迟，以及系统运行所需的资源量。
 
-Architectural patterns documented in the [Reactive Manifesto](http://www.reactivemanifesto.org) and implemented in libraries such as [Reactive Streams](http://www.reactive-streams.org) and [Reactive Extensions](http://reactivex.io) favor asynchronous messaging and embrace communication patterns beyond request/response. This "RSocket" protocol is a formal communication protocol that embraces the "reactive" principles.
+[反应式宣言](http://www.reactivemanifesto.org)记载了一类架构模式，这种模式偏爱异步消息传递并囊括了不止于请求-响应的多种通信模式，而且已经在[反应式流](http://www.reactive-streams.org)和[反应式扩展](http://reactivex.io)等代码库中实现了。我们的“RSocket”协议便是一个信奉“反应式”原则的形式通信协议。
 
-This section discusses motivations for defining a new protocol.
+这一节论述了制定新协议的动机。
 
-#### Message Driven
+#### 消息驱动 (Message Driven)
 
-Network communication is asynchronous. The RSocket protocol embraces this and models all communication as multiplexed streams of messages over a single network connection and never synchronously blocks while waiting for a response. 
+网络通信是异步的。RSocket 协议信奉这一观点，并把所有的通信建模为单一网络连接上的多路消息流，永远不会在等待响应时同步地阻塞。
 
-The [Reactive Manifesto](http://www.reactivemanifesto.org) states:
+[反应式宣言](http://www.reactivemanifesto.org)声明了：
 
-> Reactive Systems rely on asynchronous message-passing to establish a boundary between components that ensures loose coupling, isolation, location transparency, and provides the means to delegate errors as messages. Employing explicit message-passing enables load management, elasticity, and flow control by shaping and monitoring the message queues in the system and applying back-pressure when necessary. ... Non-blocking communication allows recipients to only consume resources while active, leading to less system overhead.
+> 反应式系统依靠异步消息传递在组件之间建立边界，以确保松耦合、隔离、位置透明，并提供将错误委托为消息的方法。使用显式消息传递可以通过塑造和监视系统中的消息队列并在必要时应用背压来实现负载管理、弹性和流量控制。。。非阻塞通信允许接收方仅在活动时消耗资源，从而减少系统开销。
 
-Additionally, the [HTTP/2 FAQ](https://http2.github.io/faq/#why-is-http2-multiplexed) does a good job of explaining the motivations for adopting a message-oriented protocol in the form of multiplexing over persistent connections:
+此外，[HTTP/2 FAQ](https://http2.github.io/faq/#why-is-http2-multiplexed)很好地解释了在持久连接上采用多路复用形式的面向消息协议的动机：
 
-> HTTP/1.x has a problem called “head-of-line blocking,” where effectively only one request can be outstanding on a connection at a time.
+> HTTP/1.x 存在名为“队头阻塞”的问题，即一个连接同一时间实际上只能处理一个请求。
 
-> HTTP/1.1 tried to fix this with pipelining, but it didn’t completely address the problem (a large or slow response can still block others behind it). Additionally, pipelining has been found very difficult to deploy, because many intermediaries and servers don’t process it correctly.
+> HTTP/1.1 尝试用流水线解决这个问题，但是并没有彻底解决（一个庞大或缓慢的响应仍旧会阻塞位于其后的响应）。另外，人们发现流水线非常难以部署，因为很多信息中介和服务器不能正确处理。
 
-> This forces clients to use a number of heuristics (often guessing) to determine what requests to put on which connection to the origin when; since it’s common for a page to load 10 times (or more) the number of available connections, this can severely impact performance, often resulting in a “waterfall” of blocked requests.
+> 这迫使客户端使用许多启发式方法（通常是猜测）来确定何时将哪些请求放在到源的哪个连接上；由于页面加载10倍（或更多）可用连接数的情况很常见，这可能会严重影响性能，经常导致阻塞请求的“瀑布”。（译者留言：不懂，机翻的）
 
-> Multiplexing addresses these problems by allowing multiple request and response messages to be in flight at the same time; it’s even possible to intermingle parts of one message with another on the wire.
+> 多路复用通过允许同时存在多个请求和响应消息，解决了这些问题；甚至允许两个消息的不同部分在线路上混杂传输。
 
-> This, in turn, allows a client to use just one connection per origin to load a page.
+> 这反过来让客户端可以在一个源上只使用一个连接来加载页面。
 
-It continues, discussing persistent connections:
+它接着论述起持久连接：
 
-> With HTTP/1, browsers open between four and eight connections per origin. Since many sites use multiple origins, this could mean that a single page load opens more than thirty connections.
+> 使用HTTP/1时，浏览器可以对每个源打开4个或8个连接。由于许多站点使用多个源，加载一个页面可能会打开超过30个连接。
 
-> One application opening so many connections simultaneously breaks a lot of the assumptions that TCP was built upon; since each connection will start a flood of data in the response, there’s a real risk that buffers in the intervening network will overflow, causing a congestion event and retransmits.
+> 一个应用程序同时打开如此多的连接会打破构建TCP的许多假设；由于每个连接都会在响应中涌入大量数据，因此中间网络的缓冲区有溢出的实际风险，从而导致拥塞事件和重传。
 
-> Additionally, using so many connections unfairly monopolizes network resources, “stealing” them from other, better-behaved applications (e.g., VoIP).
+> 此外，使用如此多的连接不公平地垄断了网络资源，从其他行为较好的应用程序（例如VoIP）“窃取”了网络资源。
+
+#### 交互模型(Interaction Models)
+
+不合适的协议会增加开发系统的成本。它可能是一个不合适的抽象，却迫使系统的设计变成它的模式。然后，开发人员需要花费额外的时间来解决它的缺点，以处理错误并获得可接受的性能。在使用多种编程语言的环境中，这个问题被放大了，因为不同的语言将使用不同的方法来解决这个问题，并且需要在团队之间进行额外的协调。到目前为止，事实标准是HTTP，一切都是请求/响应。在某些情况下，这可能不是所需功能的理想通信模型。
+
+推送通知就是一个这样的例子。只有请求/响应一招可用，导致应用程序不得不进行轮询，这种情况下客户端持续不断地发送请求获取服务器的数据。我们很容易发现这种情况：应用程序每秒光是为了轮询就发送大量请求，结果却只是得知目前没有任何新数据。这对客户端、服务器和网络来说是一种浪费，不仅要花钱，还会增加基础设施的规模、操作复杂性和可用性。通常，它还会增加接收通知时的用户体验延迟，因为为了降低成本，轮询频率被缩减为更长的间隔。
+
+由于这个和其他一些原因，RSocket并不局限于一个交互模型。下面介绍的各种受支持的交互模型为系统设计开辟了强大的新可能性：
 
 
-#### Interaction Models
+##### 即发即弃(Fire-and-Forget)
 
-An inappropriate protocol increases the costs of developing a system. It can be a mismatched abstraction that forces the design of the system into the mold it allows. Then developers spend extra time working around its shortcomings to handle errors and achieve acceptable performance. In a polyglot environment this problem is amplified as different languages will use different approaches to solve this problem and requires extra coordination among teams to do so. To date the defacto standard is HTTP and everything is a request/response. In some cases this might not be the ideal communication model for a given feature.
+即发即弃是一种对请求/响应的改进，在不需要响应时非常有用。它可以带来显著的性能优化，不仅通过跳过响应节省了网络使用，而且还节省了客户端和服务器的处理时间，因为不再需要为了等待和关联响应或取消请求而记录信息。
 
-One such example is push notifications. Using request/response forces an application to do polling where the client consistently sends requests to check the server for data. One does not need to look far to find examples of applications doing high volumes of requests/second just to poll and be told there is nothing for them. This is wasteful for clients, servers, and networks, costs money, increases infrastructure size, operational complexity and thus availability. Generally it also adds latency to the user experience in receiving a notification, as polling is scaled back to longer intervals in an attempt to reduce costs. 
+这个交互模型对于允许丢失的情况很有用，比如非关键事件日志记录。
 
-For this and other reasons, RSocket is not limited to just one interaction model. The various supported interaction models described below open up powerful new possibilities for system design:
-
-
-##### Fire-and-Forget
-
-Fire-and-forget is an optimization of request/response that is useful when a response is not needed. It allows for significant performance optimizations, not just in saved network usage by skipping the response, but also in client and server processing time as no bookkeeping is needed to wait for and associate a response or cancellation request. 
-
-This interaction model is useful for use cases that support lossiness, such as non-critical event logging. 
-
-Usage can be thought of like this:
+用法可以这样理解：
 
 ```java
+// in Java
 Future<Void> completionSignalOfSend = socketClient.fireAndForget(message);
 ```
 
-##### Request/Response (single-response)
+##### 请求/响应(Request/Response) （单个响应）
 
-Standard request/response semantics are still supported, and still expected to represent the majority of requests over a RSocket connection. These request/response interactions can be considered optimized "streams of only 1 response", and are asynchronous messages multiplexed over a single connection. 
+标准的请求/响应语义仍然受到支持，而且我们预计它将仍然代表 RSocket 连接上的大多数请求。这些请求/响应交互可以被认为是优化的“只包含一个响应的流”，并且是在单个连接上复用的异步消息。
 
-The consumer "waits" for the response message, so it looks like a typical request/response, but underneath it never synchronously blocks.
+消费者“等待”响应消息，因此它看起来像一个典型的请求/响应，但在底层它从不同步阻塞。
 
-Usage can be thought of like this:
+用法可以这样理解：
 
 ```java
 Future<Payload> response = socketClient.requestResponse(requestPayload);
 ```
 
-##### Request/Stream (multi-response, finite) 
+#### 请求/流(Request/Stream)（多个响应，有限）
 
-Extending from request/response is request/stream, which allows multiple messages to be streamed back. Think of this as a "collection" or "list" response, but instead of getting back all the data as a single response, each element is streamed back in order.
+由请求/响应可以扩展到请求/流，它允许将多个消息流式返回。可以将其视为一个“集合”或“列表”响应，但不是作为单个响应返回所有数据，而是按顺序流式返回每个元素。
 
-Use cases could include things like:
+使用例可以包括：
 
-- fetching a list of videos
-- fetching products in a catalog
-- retrieving a file line-by-line
+- 获取视频列表
+- 获取某个种类的产品列表
+- 逐行获取一个文件
 
-Usage can be thought of like this:
+用法可以这样理解：
 
 ```java
 Publisher<Payload> response = socketClient.requestStream(requestPayload);
 ```
 
-##### Channel
+##### 通道
 
-A channel is bi-directional, with a stream of messages in both directions. 
+通道是双向的，在两个方向上都有消息流。
 
-An example use case that benefits from this interaction model is:
+可以从中受益的一个使用例是：
 
-- client requests a stream of data that initially bursts the current view of the world
-- deltas/diffs are emitted from server to client as changes occur
-- client update the subscription over time to add/remove criteria/topics/etc
+- 客户端请求一个数据流，这个流在建立后立即发送大量数据告知客户端当前状态
+- 当发生变化时，服务器向客户端发送增量/差异
+- 客户端随着时间的推移更新订阅，以添加或删除标准、主题等
 
-Without a bi-directional channel, the client would have to cancel the initial request, re-request and receive all data from scratch, rather than just updating the subscription and efficiently getting just the difference. 
+如果没有双向通道，客户端不得不取消初始请求，重新请求并从头接收所有数据，而不是仅仅更新订阅并高效地获取差异。
 
-Usage can be thought of like this:
+用法可以这样理解：
 
 ```java
 Publisher<Payload> output = socketClient.requestChannel(Publisher<Payload> input);
 ```
 
-#### Behaviors
+#### 行为
 
-Beyond the interaction models above, there are other behaviors that can benefit applications and system efficiency. 
+除了上面的交互模型之外，还有其他行为有益于应用程序和系统效率。
 
-##### single-response vs multi-response
+##### 单响应 对比 多响应
 
-One key difference between single-response and multi-response is how the RSocket stack delivers data to the application: A single-response might be carried across multiple frames, and be part of a larger RS connection that is streaming multiple messages multiplexed. But single-response means the application only gets its data when the entire response is received. While multi-response delivers it piecemeal. This could allow the user to design its service with multi-response in mind, and then the client can start processing the data as soon as it receives the first chunk.
+单响应和多响应之间的一个关键区别是 RSocket 栈如何向应用程序传递数据：单个响应可能跨多个帧进行传输，并且是一个更大的 RS 连接的一部分，而且该连接此时可能正在传输多个多路消息流。但是单响应意味着应用程序只有在接收到整个响应后才能获得数据。而多响应则是一份一份地传递数据。这可以允许用户在设计服务时考虑多响应，然后客户端可以在接收到第一个数据块后立即开始处理数据。
 
-##### Bi-Directional
+##### 双向
 
-RSocket supports bi-directional requests where both client and server can act as requester or responder. This allows a client (such as a user device) to act as a responder to requests from the server. 
+RSocket 支持双向请求，客户端和服务器都可以作为请求者或响应者。这允许客户端（例如用户设备）充当来自服务器请求的响应器。
 
-For example, a server could query clients for trace debug information, state, etc. This can be used to reduce infrastructure scaling requirements by allowing server-side to query when needed instead of having millions/billions of clients constantly submitting data that may only occasionally be needed. This also opens up future interaction models currently not envisioned between client and server.
+例如，服务器可以向客户端查询跟踪调试信息、状态等。服务器可以在需要时才进行查询，而不是让几亿个客户端不停地提交只是偶尔可能需要的数据，从而减少基础设施的扩增需求。这也开创了客户机和服务器之间目前无法想象的未来交互模型。
 
-##### Cancellation
+##### 取消
 
-All streams (including request/response) support cancellation to allow efficient cleanup of server (responder) resources. This means that when a client cancels, or walks away, servers are given the chance to terminate work early. This is essential with interaction models such as streams and subscriptions, but is even useful with request/response to allow efficient adoption of approaches such as "backup requests" to tame tail latency (more information [here](http://highscalability.com/blog/2012/3/12/google-taming-the-long-latency-tail-when-more-machines-equal.html), [here](http://highscalability.com/blog/2012/6/18/google-on-latency-tolerant-systems-making-a-predictable-whol.html), [here](http://www.bailis.org/blog/doing-redundant-work-to-speed-up-distributed-queries/), and [here](http://static.googleusercontent.com/external_content/untrusted_dlcp/research.google.com/en/us/people/jeff/Stanford-DL-Nov-2010.pdf))
-
-
-#### Resumability
-
-With long-lived streams, particularly those serving subscriptions from mobile clients, network disconnects can significant impact cost and performance if all subscriptions must be re-established. This is particularly egregious when the network is immediately reconnected, or when switched between Wifi and cell networks. 
-
-RSocket supports session resumption, allowing a simple handshake to resume a client/server session over a new transport connection.
+所有流(包括请求/响应)都支持取消，以便有效地清理服务器(响应器)资源。这意味着当客户端取消或离开时，服务器有机会提前终止工作。这对于流和订阅等交互模型是必不可少的，但对于请求/响应也很有用，可以有效地采用“备份请求”等方法来抑制尾部延迟。（拓展阅读 [1](http://highscalability.com/blog/2012/3/12/google-taming-the-long-latency-tail-when-more-machines-equal.html)，[2](http://highscalability.com/blog/2012/6/18/google-on-latency-tolerant-systems-making-a-predictable-whol.html)，[3](http://www.bailis.org/blog/doing-redundant-work-to-speed-up-distributed-queries/)，[4](http://static.googleusercontent.com/external_content/untrusted_dlcp/research.google.com/en/us/people/jeff/Stanford-DL-Nov-2010.pdf)）
 
 
-#### Application Flow Control
+#### 可恢复性
 
-RSocket provides application-level flow control that helps to protect both clients and servers from being overwhelmed.
-It is designed both for server-to-server communication within a data center, and for device-to-server scenarios involving
-browsers, mobile phones, and others. Both scenarios can benefit from application flow control.
+对于长期存在的流，特别是那些从移动客户端提供订阅服务的流，如果必须重新建立所有订阅，网络断开可能会严重影响成本和性能。当网络直接发生重新连接，或者在 Wifi 和蜂窝网络之间切换时，这种情况尤其严重。
 
+RSocket 支持会话恢复，允许用一个简单的握手在新的传输连接上恢复客户端/服务器会话。
 
-##### "Reactive Streams" (Per-Stream) Back Pressure
+#### 应用流控
 
-The first form of flow control is back pressure applied on a given stream. It is a type of "async pull-push" flow control inspired by the Reactive Streams
-[Subscription.request(n)](https://github.com/reactive-streams/reactive-streams-jvm/blob/master/README.md#3-subscription-code) mechanism. 
-Reactive Streams libraries such as
-[Reactor](https://github.com/reactor/reactor), [RxJava](https://github.com/ReactiveX/RxJava/),
-[Akka Streams](http://doc.akka.io/docs/akka/2.4/scala/stream/index.html) and many others implement this back pressure mechanism.
-This mechanism enables servers and devices to push back on the flow of payloads from the remote end within a given stream. 
+RSocket提供了应用程序级别的流量控制，帮助保护客户端和服务器免于过载。它既适用于数据中心内的服务器到服务器通信，也适用于涉及浏览器、移动电话等的设备到服务器场景。这两种场景都可以从应用流控中获益。
 
-RSocket enables for the `request(n)` signal to be sent across the network from requester to responder (typically from client to server).
-This controls the flow of payloads from the responder to the requester based on Reactive Streams semantics at the application level,
-which enables the use of bounded buffers so the rate of flow adjusts to application consumption and does not rely solely on transport and network buffering.
+##### “反应式流” （数据流级别）背压
 
-##### Leasing (Connection-level Back Pressure)
+流量控制的第一种形式是在给定的流上施加背压。它是一种受反应式流 [Subscription.request(n)](https://github.com/reactive-streams/reactive-streams-jvm/blob/master/README.md#3-subscription-code) 机制启发的“异步拉取-推送”流控。
 
-The second form of flow control is about limiting the overall number of requests and streams within a given connection.
-This can be used in any scenario where a responder wants to limit on the number of concurrent requests.
-When enabled, a responder (typically but not necessarily a server) can issue leases to the requester based on its knowledge of its own capacity in order to control request rates.
+很多反应式流代码库，比如
+[Reactor](https://github.com/reactor/reactor)，[RxJava](https://github.com/ReactiveX/RxJava/)，[Akka Streams](http://doc.akka.io/docs/akka/2.4/scala/stream/index.html) 以及很多其他的库都实现了这种背压机制。
+该机制使服务器和设备能够在给定流内从远程端推回有效负载流。
 
-This can also be used to enable more intelligent routing and load balancing algorithms in data centers with clusters of machines. 
-For example loadbalanced servers (responders) can signal their capacity to a proxy (requester).
+RSocket 允许 `request(n)` 信号通过网络从请求者发送到响应者（通常是从客户端到服务器）。它在应用层级上根据反应式流语义控制从响应器到请求者的负载流。这支持使用有界缓冲区，因此流的速率将根据应用程序的消耗进行调整，而不仅仅依赖于传输和网络缓冲。
 
+##### 租借（连接级别背压）
 
-#### Polyglot Support
+流控的第二种形式是限制给定连接中的请求和流的总数。在响应器想要限制并发请求数时可以发挥作用。启用后，响应器（通常是服务器，但不一定是服务器）可以根据自身能力向请求者发放租约，以便控制请求速率。
 
-Many of the motivations above can be achieved by leveraging existing protocols, libraries, and techniques. However, this often ends up being tightly coupled with specific implementations that must be agreed upon across languages, platforms and tech stacks. Formalizing the interaction models and flow control behaviors into a protocol provides a contract between implementations in different languages. This in turn improves polyglot interactions in a broader set of behaviors than the ubiquitous HTTP/1.1 request/response, while also enabling Reactive Streams application level flow control across languages (rather than just in Java for example where Reactive Streams was originally defined).
+这也可以用于在具有机器集群的数据中心中启用更智能的路由和负载平衡算法。例如，负载均衡服务器（响应者）可以将其容量发送给代理（请求者）。
 
-#### Transport Layer Flexibility
+#### 多编程语言支持
 
-Just like HTTP request/response is not the only way applications can or should communicate, TCP is not the only transport layer available, and not the best for all use cases. Thus, RSocket allows for swapping of the underlying transport layer based on environment, device capabilities and performance needs. RSocket (the application protocol) targets WebSockets, TCP, and [Aeron](https://github.com/real-logic/Aeron), and is expected to be usable over any transport layer with TCP-like characteristics, such as [Quic](https://www.chromium.org/quic).
+上面的许多动机都可以通过利用现有的协议、库和技术来实现。然而，这通常需要结合某些必须在跨语言、平台和技术栈上已经达成一致的特定的实现。将交互模型和流控制行为形式化到协议中提供了不同语言实现之间的契约。与无处不在的HTTP/1.1请求/响应相比，这反过来又在更广泛的行为集中改进了多语言交互，同时还支持跨语言的反应式流应用级流控（而不是局限于最初定义反应式流的 Java）。
 
-Perhaps more importantly though, it makes TCP, WebSockets and Aeron usable without significant effort. For example, use of WebSockets is often appealing, but all it exposes is framing semantics, so using it requires the definition of an application protocol. This is generally overwhelming and requires a lot of effort. TCP doesn't even provide framing. Thus, most applications end up using HTTP/1.1 and sticking to request/response and missing out on the benefits of interaction models beyond synchronous request/response.
+#### 传输层适应性
+（译者按：本协议文档中出现的“传输层”一次和OSI七层模型的“传输层”有一定区别。）
 
-Thus, RSocket defines application layer semantics over these network transports to allow choosing them when they are appropriate. Later in this document is a brief comparison with other protocols that were explored while trying to leverage WebSockets and Aeron before determining that a new application protocol was wanted.
+就像 HTTP 请求/响应不是应用程序可以或应该通信的唯一方式一样，TCP 不是唯一可用的传输层，也不是所有用例的最佳传输层。因此，RSocket 允许基于环境、设备能力和性能需求更换底层传输层。RSocket（应用协议）可以面向 WebSockets、TCP 和 [Aeron](https://github.com/real-logic/Aeron)，并且预期可以在任何具有类似 TCP 特性的传输层上使用，比如 [Quic](https://www.chromium.org/quic)。
 
-#### Efficiency & Performance
+也许更重要的是，它使 TCP、WebSockets 和 Aeron 无需付出很大的努力就可以投入使用。例如，WebSockets 的使用通常很吸引人，但它仅展现了帧封装语义，因此使用它需要定义应用程序协议。这通常是工作量很庞大，需要大量的努力。而 TCP 甚至不提供帧封装。因此，大多数应用程序最终使用 HTTP/1.1 并牢牢抓住请求/响应不放，而错失了同步式请求/响应之外更多丰富的交互模型带来的好处。
 
-A protocol that uses network resources inefficiently (repeated handshakes and connection setup and tear down overhead, bloated message format, etc.) can greatly increase the perceived latency of a system. Also, without flow control semantics, a single poorly written module can overrun the rest of the system when dependent services slow down, potentially causing retry storms that put further pressure on the system. [Hystrix](https://github.com/Netflix/Hystrix/wiki#problem) is an example solution trying to address the problems of synchronous request/response. It comes [at a cost](https://github.com/Netflix/Hystrix/wiki/FAQ#what-is-the-processing-overhead-of-using-hystrix) though in overhead and complexity.
+因此，RSocket 在这些网络传输上定义了应用层语义，以便在适当的时候选择它们。在本文档的稍后，我们将简要比较一下在确定需要一个新的应用协议之前，尝试使用 WebSockets 和 Aeron 时所探索的其他协议。
 
-Additionally, a poorly chosen communication protocol wastes server resources (CPU, memory, network bandwidth). While that may be acceptable for smaller deployments, large systems with hundreds or thousands of nodes multiply the somewhat small inefficiencies into noticeable excess. Running with a huge footprint leaves less room for expansion as server resources are relatively cheap but not infinite. Managing giant clusters is much more expensive and less nimble even with good tools. And often forgotten, the larger a cluster is, the more operationally complex it is, which becomes an availability concern. 
+#### 效率与性能
 
-RSocket seeks to:
+网络资源利用效率低下的协议（重复握手和连接建立和断开开销、臃肿的消息格式等）会极大地增加系统的感知延迟。此外，如果没有流控制语义，当依赖的服务变慢时，单个写得不好的模块可能会导致系统的其余部分超时，从而可能引发重试风暴，给系统带来进一步的压力。[Hystrix](https://github.com/Netflix/Hystrix/wiki#problem) 是一个试图解决同步请求/响应问题的例子，不过要在开销和复杂性上[付出代价](https://github.com/Netflix/Hystrix/wiki/FAQ#what-is-the-processing-overhead-of-using-hystrix)。
 
-- Reduce perceived latency and increase system efficiency by supporting non-blocking, duplex, async application communication with flow control over multiple transports from any language.
+此外，选择不当的通信协议会浪费服务器资源（CPU、内存、网络带宽）。虽然这对于较小的部署可能是可以接受的，但具有数百或数千个节点的大型系统会把效率方面一点点的不足放大成千上万倍。使用巨大的内存占用会减少扩展的空间，因为虽然服务器资源相对便宜但也不是无限的。管理大型集群的成本要高得多，而且即使使用好的工具也不够灵活。而且经常被遗忘的是，集群越大，操作就越复杂，这成为可用性问题。
 
-- Reduce hardware footprint (and thus cost and operational complexity) by:
-   - increasing CPU and memory efficiency through use of binary encoding
-   - avoid redundant work by allowing persistent connections
+RSocket 寻求：
 
-- Reduce perceived user latency by:
-   - avoiding handshakes and the associated round-trip network overhead
-   - reducing computation time by using binary encoding
-   - allocating less memory and reducing garbage collection cost
+- 通过支持任何语言和多种传输手段的流量控制，支持非阻塞、双工、异步应用程序通信，减少感知延迟并提高系统效率。
 
+- 通过以下方式减少硬件占用(从而降低成本和操作复杂性)：
+   - 通过使用二进制编码提高CPU和内存效率
+   - 通过允许持久连接来避免冗余工作
 
-## Comparisons
+- 通过以下方式减少用户感知延迟：
+   - 避免握手和相关的网络往返开销
+   - 利用二进制编码减少计算时间
+   - 分配更少的内存并降低垃圾收集成本
 
-Following is a brief review of some protocols reviewed before deciding to create RSocket. It is not trying to be exhaustive or detailed. It also does not seek to criticize the various protocols, as they all are good at what they are built for. This section is meant solely to express that existing protocols did not sufficiently meet the requirements that motivated the creation of RSocket.
+## 各种对比
 
-For context: 
+下面是在决定建立 RSocket 之前对一些协议的简要评阅。我们并不打算全面或详细地讨论，也不是为了批评各种协议，因为它们在各自领域中都发挥出色。本节仅仅是为了表达现有的协议不能充分满足的需求，从而催生了 RSocket。
 
-- RSocket is an OSI Layer 5/6, or TCP/IP Application Layer protocol. 
-- It is intended for use over duplex, binary transport protocols that are TCP-like in behavior (described further [here](https://github.com/RSocket/reactivesocket/blob/master/Protocol.md#transport-protocol)).
+背景：
 
-#### TCP & QUIC
+- RSocket 是 OSI 5/6层协议，即 TCP/IP 应用层协议。
+- 它的目标是用于行为类似 TCP 的双工二进制传输协议上（[更深入的介绍](./Protocol.md#transport-protocol)）.
 
-No framing or application semantics. Must provide an application protocol.
+#### TCP 和 QUIC
+
+没有帧封装或应用程序语义。必须提供应用程序协议。
 
 #### WebSockets
 
-No application semantics, just framing. Must provide an application protocol.
+没有应用程序语义，只有帧封装。必须提供应用程序协议。
 
-#### HTTP/1.1 & HTTP/2
+#### HTTP/1.1 和 HTTP/2
 
-HTTP provides barely sufficient raw capabilities for application protocols to be built with, but an application protocol still needs to be defined on top of it. It is insufficient in defining application semantics. ([GRPC from Google](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) is an example of a protocol being built on top of HTTP/2 to add these type of semantics).
+HTTP 提供了勉强够用的原始功能来构建应用程序协议，但是仍然需要在其基础上定义应用程序协议。它在定义应用程序语义方面是不够的。（[Google 的 GRPC ](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md)就是一个基于 HTTP/2 的协议的例子，它添加了这类语义）
 
-These limited application semantics generally requires an application protocol to define things such as:
-  - Use of GET, POST or PUT for request
-  - Use of Normal, Chunked or SSE for response
-  - MimeType of payload
-  - error messaging along with standard status codes
-  - how client should behave with status codes
-  - Use of SSE as persistent channel from server to client to allow server to make requests to client
+这些有限的应用语义通常需要一个应用协议来定义以下内容：
+  - 对请求使用 GET、POST 或 PUT
+  - 使用正常，分块或 SSE 进行响应
+  - 负载数据的 MimeType
+  - 跟随标准状态码的错误信息
+  - 客户端应该如何处理状态码
+  - 使用 SSE 作为从服务器到客户端的持久通道，让服务器可以向客户端发送请求
 
-There is no defined mechanism for flow control from responder (typically server) to requestor (typically client). HTTP/2 does flow control at the byte level, not the application level. The mechanisms for communicating requestor (typically server) availability (such as failing a request) are inefficient and painful. It does not support interaction models such as fire-and-forget, and streaming models are inefficient (chunked encoding or SSE, which is ASCII based).
+没有定义从响应器（通常是服务器）到请求者（通常是客户端）的流控机制。HTTP/2 在字节级别进行流量控制，而不是在应用程序级别。用于通信请求者（通常是服务器）可用性（例如请求失败）的机制效率低下且令人痛苦。它不支持诸如“即发即弃”之类的交互模型，并且流模型效率低下（块编码或 SSE，这是基于 ASCII 的）。
 
-Despite its ubiquity, REST alone is insufficient and inappropriate for defining application semantics. 
+尽管 REST 无处不在，但单独使用它不足够、也不适合定义应用程序语义。
 
-What about HTTP/2 though? Doesn't it resolve the HTTP/1 issues and address the motivations of RSocket?
+那么 HTTP/2 呢？它不是解决了 HTTP/1 的问题并迎合了 RSocket 的动机吗？
 
-Unfortunately, no. HTTP/2 is MUCH better for browsers and request/response document transfer, but does not expose the desired behaviors and interaction models for applications as described earlier in this document.
+不走运的是，没有。HTTP/2 对于浏览器和请求/响应文档传输来说要**好得多**，但并没有像本文档前面描述的那样展现应用程序所需的行为和交互模型。
 
-Here are some quotes from the HTTP/2 [spec](https://http2.github.io/http2-spec/) and [FAQ](https://http2.github.io/faq/) that are useful to provide context on what HTTP/2 was targeting:
+从 [HTTP/2 规范](https://http2.github.io/http2-spec/)和[常见问题](https://http2.github.io/faq/)摘录了一些文字，以方便大家了解 HTTP/2 针对的方向:
 
-> “HTTP's existing semantics remain unchanged.”
-
-> “… from the application perspective, the features of the protocol are largely unchanged …”
-
-> "This effort was chartered to work on a revision of the wire protocol – i.e., how HTTP headers, methods, etc. are put “onto the wire”, not change HTTP’s semantics."
-
-Additionally, "push promises" are focused on filling browser caches for standard web browsing behavior:
-
-> “Pushed responses are always associated with an explicit request from the client.”
-
-This means we still need SSE or WebSockets (and SSE is a text protocol so requires Base64 encoding to UTF-8) for push.
-
-HTTP/2 was meant as a better HTTP/1.1, primarily for document retrieval in browsers for websites. We can do better than HTTP/2 for applications. 
+（。。。后面的内容与 FAQ 的[相关片段](./FAQ.md#为什么不用-http2)相同）
