@@ -1,49 +1,37 @@
-# Composite Metadata Extension
+# 复合元数据扩展
 
-_This extension specification is currently incubating.  While incubating the version is 0._
+_该扩展规范目前正在孵化中。孵化时，版本为0。_
 
-## Introduction
-There are a number of situations where an arbitrary collection of discrete metadata types should be attached to frame.  For example, a request frame may want to include both routing metadata as well as tracing metadata.  This extension specification provides an interoperable structure for metadadata payloads to contain multiple discrete metadata types.  It is designed such that if a consumer of the metadata is unaware of a particular type, it can be safely skipped and the next one read.
+## 介绍
+在许多情况下，一批任意的不相关的元数据类型需要被附加到帧上。例如，请求帧可能想要同时包含路由元数据和追踪元数据。此扩展规范为元数据负载提供了一个可互操作的结构，以包含多个不相关的元数据类型。它的设计是这样的，如果元数据的消费者不认识某种类型，可以安全地跳过该类型，并读取下一个类型。
 
-## Metadata Payload
-This metadata type is intended to be used per stream, and not per connection nor individual payloads and as such it **MUST** only be used in frame types used to initiate interactions.  This includes [`REQUEST_FNF`][rf], [`REQUEST_RESPONSE`][rr], [`REQUEST_STREAM`][rs], and [`REQUEST_CHANNEL`][rc].  Multiple metadata payloads with the same MIME type are allowed.  The order of metadata payloads MUST be preserved when presented to responders.  The [`SETUP` Frame][s] Metadata MIME Type is `message/x.rsocket.composite-metadata.v0`.
+## 元数据负载
 
-[rc]: ../Protocol.md#frame-request-channel
-[rf]: ../Protocol.md#frame-fnf
-[rr]: ../Protocol.md#frame-request-response
-[rs]: ../Protocol.md#frame-request-stream
-[s]:  ../Protocol.md#frame-setup
+此元数据类型设计成按流使用，而不是按连接或单个负载，因此它**必须**(**MUST**)仅用于初始化交互的帧类型。包括 [`REQUEST_FNF`](../Protocol.md#frame-fnf)，[`REQUEST_RESPONSE`](../Protocol.md#frame-request-response)，[`REQUEST_STREAM`](../Protocol.md#frame-request-stream)，和 [`REQUEST_CHANNEL`](../Protocol.md#frame-request-channel)。允许多个使用相同 MIME 类型的元数据负载。元数据负载的顺序**必须**(MUST)在呈现给响应者时保持不变。[`SETUP` 帧](../Protocol.md#frame-setup)元数据 MIME 类型是 `message/x.rsocket.composite-metadata.v0`。
 
-### Metadata Contents
+### 元数据内容
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |M| MIME ID/Len |   Metadata Encoding MIME Type                ...
+    |M| MIME ID/长度 |   元数据编码 MIME 类型                        ...
     +---------------+---------------+---------------+---------------+
-    |              Metadata Length                  |
+    |                   元数据长度                   |
     +-----------------------------------------------+---------------+
-    |                     Metadata Payload                         ...
+    |                         元数据负载                            ...
     +---------------+-----------------------------------------------+
-    |M| MIME ID/Len |   Metadata Encoding MIME Type                ...
+    |M| MIME ID/长度 |   元数据编码 MIME 类型                        ...
     +---------------+-------------------------------+---------------+
-    |              Metadata Length                  |
+    |                   元数据长度                   |
     +-----------------------------------------------+---------------+
-    |                     Metadata Payload                         ...
+    |                         元数据负载                            ...
     +---------------------------------------------------------------+
                                    ...
 ```
 
-* **Metadata Payload**: Any number of complete metadata payloads.
-  * (**M**)etadata Type: Metadata type is a well known value represented by a unique integer.
-  * **MIME ID/Length**: (7 bits = max value 2^7 = 128) Unsigned 7-bit integer.  If M flag is set, indicates a [Well-known MIME Type ID][wk].  If M flag is not set, indicates the encoding MIME Type Length in bytes.
-  * **Metadata Encoding MIME Type**: MIME Type for encoding of Metadata. This SHOULD be a US-ASCII string that includes the [Internet media type](https://en.wikipedia.org/wiki/Internet_media_type) specified in [RFC 2045][rf].  Many are registered with [IANA][ia] and others such as [Routing][r] and [Tracing (Zipkin)][tz] are not.  [Suffix][s] rules MAY be used for handling layout.  The string MUST NOT be null terminated.  (Not present if M flag is set)
-  * **Metadata Length**: (24 bits = max value 16,777,215) Unsigned 24-bit integer of Metadata Length in bytes.
-  * **Metadata Payload**: User configured metadata encoded as defined by the Metadata Encoding MIME Type.
-
-[ia]: https://www.iana.org/assignments/media-types/media-types.xhtml
-[r]:  Routing.md
-[rf]: https://tools.ietf.org/html/rfc2045
-[s]:  http://www.iana.org/assignments/media-type-structured-suffix/media-type-structured-suffix.xml
-[tz]: Tracing-Zipkin.md
-[wk]: WellKnownMimeTypes.md
+* **元数据负载**：任意数量的完整元数据负载。
+  * **元数据类型**( **M** etadata Type )：元数据类型是由唯一整数表示的公认值。
+  * **MIME ID/长度**：（7位，最大值128）无符号7位整数。如果设置了M标志，则表示一个[公认 MIME 类型ID](./WellKnownMimeTypes.md)。如果没有设置M标志，则表示以字节为单位的编码 MIME 类型长度。
+  * **元数据编码 MIME 类型**：编码元数据的 MIME 类型。这**应该**(SHOULD)是一个包含了[RFC 2045](https://tools.ietf.org/html/rfc2045) 所规定的 [互联网媒体类型](https://en.wikipedia.org/wiki/Internet_media_type) 的 US-ASCII 字符串。很多已经在 [IANA](https://www.iana.org/assignments/media-types/media-types.xhtml) 上注册，也有像 [路由](./Routing.md) 和 [追踪 (Zipkin)](./Tracing-Zipkin.md) 这种没有注册的。[后缀](http://www.iana.org/assignments/media-type-structured-suffix/media-type-structured-suffix.xml)规则**可以**(MAY)用于处理布局。字符串**禁止**(MUST NOT)以空字符结束。（如果设置了M标志，则本字段不存在）
+  * **元数据长度**：（24位，最大值 16,777,215）无符号24位整数，表示以字节为单位的*元数据长度*。
+  * **元数据负载**：用户配置的按*元数据编码 MIME 类型*编码的元数据
