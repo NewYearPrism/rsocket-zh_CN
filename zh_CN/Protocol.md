@@ -1,957 +1,925 @@
-## Introduction
+## 序言
 
-RSocket is an application protocol that provides [Reactive Streams](http://www.reactive-streams.org/) semantics across a network, asynchronous, binary boundary.
+RSocket 是一个在网络、异步、二进制边界提供[反应式流](http://www.reactive-streams.org/)语义的应用协议。
 
-For more information, please see [rsocket.io](http://rsocket.io/).
+有关更多信息，请参阅 [rsocket.io](http://rsocket.io/)。
 
-RSocket assumes an operating paradigm. These assumptions are:
-- one-to-one communication
-- non-proxied communication. Or if proxied, the RSocket semantics and assumptions are preserved across the proxy.
-- no state preserved across [transport protocol](#transport-protocol) sessions by the protocol
+RSocket 假定一种操作范式。这些假定是:
+- 一对一通信
+- 非代理通信。或者如果存在代理，则 RSocket 语义和假定在经过代理时被保留。
+- 本协议在[传输协议](#transport-protocol)会话之间不保留状态
 
-Keywords used by this document conform to the meanings in [RFC 2119](https://tools.ietf.org/html/rfc2119).
+本文中使用的关键字遵循 [RFC 2119](https://tools.ietf.org/html/rfc2119) 的含义。
+（译者按：文中的需求动词会着重标注。）
 
-__Byte ordering is big endian for all fields__.
+__所有字段的字节顺序都是大端序__。
 
-## Table of Contents
+（译者按：Github 文档比官网文档少了 Status 这个介绍协议现状（版本）的小节：https://rsocket.io/about/protocol#status ）
 
-- [Terminology](#terminology)
-- [Versioning Scheme](#versioning-scheme) 
-- [Data and Metadata](#data-and-metadata) 
-- [Framing](#framing)
-  - [Transport Protocol](#transport-protocol)
-  - [Framing Protocol Usage](#framing-protocol-usage)
-  - [Framing Format](#framing-format)
-  - [Frame Header Format](#frame-header-format)
-  - [Stream Identifiers](#stream-identifiers)
-  - [Frame Types](#frame-types)
-- [Resuming Operation](#resuming-operation)
-- [Connection Establishment](#connection-establishment)
-- [Fragmentation and Reassembly](#fragmentation-and-reassembly)
-- [Stream Sequences and Lifetimes](#stream-sequences-and-lifetimes)
-  - [Request Response](#stream-sequences-request-response)
-  - [Fire and Forget](#stream-sequences-fire-and-forget)
-  - [Request Stream](#stream-sequences-request-stream)
-  - [Request Channel](#stream-sequences-channel)
-- [Flow Control](#flow-control)
-  - [Reactive Stream Semantics](#flow-control-reactive-streams)
-  - [Lease Semantics](#flow-control-lease)
-  - [QoS and Prioritization](#flow-control-qos)
-- [Handling the Unexpected](#handling-the-unexpected)
+## 目录 
+
+- [术语](#terminology)
+- [版本控制方案](#versioning-scheme) 
+- [数据和元数据](#data-and-metadata) 
+- [帧封装](#framing)
+  - [传输协议](#transport-protocol)
+  - [分帧协议的使用](#framing-protocol-usage)
+  - [帧封装格式](#framing-format)
+  - [帧标头格式](#frame-header-format)
+  - [流标识符](#stream-identifiers)
+  - [帧类型](#frame-types)
+- [恢复运行](#resuming-operation)
+- [连接建立](#connection-establishment)
+- [分片和重组](#fragmentation-and-reassembly)
+- [流顺序和生命周期](#stream-sequences-and-lifetimes)
+  - [请求 响应](#stream-sequences-request-response)
+  - [即发即弃](#stream-sequences-fire-and-forget)
+  - [请求 流](#stream-sequences-request-stream)
+  - [请求 通道](#stream-sequences-channel)
+- [流量控制](#flow-control)
+  - [反应式流语义](#flow-control-reactive-streams)
+  - [租约语义](#flow-control-lease)
+  - [QoS 和优先级](#flow-control-qos)
+- [应对意外情况](#handling-the-unexpected)
 
 
-## Terminology
+## <a id="terminology"></a>术语(Terminology)
 
-* __Frame__: A single message containing a request, response, or protocol processing.
-* __Fragment__: A portion of an application message that has been partitioned for inclusion in a Frame.
-See [Fragmentation and Reassembly](#fragmentation-and-reassembly).
-* __Transport__: Protocol used to carry RSocket protocol. One of WebSockets, TCP, or Aeron. The transport MUST
-provide capabilities mentioned in the [transport protocol](#transport-protocol) section.
-* __Stream__: Unit of operation (request/response, etc.). See [Motivations](Motivations.md).
-* __Request__: A stream request. May be one of four types. As well as request for more items or cancellation of previous request.
-* __Payload__: A stream message (upstream or downstream). Contains data associated with a stream created by a previous request. In Reactive Streams and Rx this is the 'onNext' event.
-* __Complete__: Terminal event sent on a stream to signal successful completion. In Reactive Streams and Rx this is the 'onComplete' event.
-  * A frame (PAYLOAD or REQUEST_CHANNEL) with the Complete bit set is sometimes referred to as COMPLETE in this document when reference to the frame is semantically about the Complete bit/event.
-* __Client__: The side initiating a connection.
-* __Server__: The side accepting connections from clients.
-* __Connection__: The instance of a transport session between client and server.
-* __Requester__: The side sending a request. A connection has at most 2 Requesters. One in each direction.
-* __Responder__: The side receiving a request. A connection has at most 2 Responders. One in each direction.
+* __帧(Frame)__: 包含请求、响应或协议处理的单个消息。
+* __片段(Fragment)__: 为了装入帧内而分段的应用消息的一部分。
+见[分片和重组](#fragmentation-and-reassembly).
+* __传输方式(Transport)__: 承载 RSocket 协议的协议。WebSockets、TCP 或 Aeron 之一。传输方式**必须**(MUST)提供[传输协议](#transport-protocol)中提到的功能。
+* __流(Stream)__: 运行单元（请求/响应，等）。见[动机](./Motivations.md).
+* __请求(Request)__: 流的请求。可以是四种类型之一。也可以是要求更多的条目或取消以前的请求。
+* __负载(Payload)__: 流消息（上行或下行）。包含与前一个请求创建的流相关联的数据。在反应式流和 Rx 中，这是“onNext”事件。
+* __完成(Complete)__: 在流上发送的终结事件，表示成功完成。在反应式流和 Rx 中，这是“onComplete”事件。
+  * 在本文档中，当所指的帧在语义上是关于完成位/完成事件时，配置了完成位的帧（PAYLOAD 或 REQUEST_CHANNEL）有时被称为 COMPLETE。
+* __客户端(Client)__: 发起连接的一方。
+* __服务器(Server)__: 接受客户端连接的一方。
+* __连接(Connection)__: 客户端和服务器之间的传输会话的实例。
+* __请求者(Requester)__: 发送请求的一方。一个连接最多有2个请求者。两个方向各一个。
+* __响应者(Responder)__: 接收请求的一方。一个连接最多有2个响应者。两个方向各一个。
 
-## Versioning Scheme
 
-RSocket follows a versioning scheme consisting of a numeric major version and a numeric minor version.
+## <a id="versioning-scheme"></a>版本控制方案(Versioning Scheme)
 
-### Cross version compatibility
+RSocket 遵循包含主版本号和次要版本号的版本控制方案。
 
-RSocket assumes that all version changes (major and minor) are backward incompatible.
-A client can pass a version that it supports via the [Setup Frame](#frame-setup).
-It is up to a server to accept clients of lower versions than what it supports.
+### 跨版本兼容性
 
-## Data And Metadata
+RSocket 假定所有版本变更（主要和次要）都是向后不兼容的。客户端可以通过[Setup帧](#frame-setup)传递它支持的版本。这取决于服务器是否接受低于它所支持版本的客户端。
 
-RSocket provides mechanisms for applications to differentiate between two types of content within a payload, Data and Metadata, with the distinction left to applications to make use of according to their needs.
 
-The following are features of Data and Metadata.
+## <a id="data-and-metadata"></a>数据(Data)和元数据(Metadata)
 
-- Metadata can be encoded differently than Data.
-- Metadata can be "attached" (i.e. correlated) with the following entities:
-    - Connection via Metadata Push and Stream ID of 0
-    - Individual Request or Payload (upstream or downstream)
+RSocket 为应用程序提供了一种机制来区分负载中的两种类型的内容：数据和元数据，这种区别留给应用程序根据自己的需要来使用。
 
-## Framing
+以下是数据和元数据的特性。
 
-### Transport Protocol
+- 元数据可以以不同于数据的方式编码。
+- 元数据可以“附加”（即关联）到以下实体:
+    - 通过元数据推送和流ID 0的连接
+    - 单个请求或负载（上行或下行）
 
-The RSocket protocol uses a lower level transport protocol to carry RSocket frames. A transport protocol MUST provide the following:
 
-1. Unicast [Reliable Delivery](https://en.wikipedia.org/wiki/Reliability_(computer_networking)), i.e. between a single sender and a single receiver with "at least once" message delivery guarantees.
-1. [Connection-Oriented](https://en.wikipedia.org/wiki/Connection-oriented_communication) along with preservation of frame ordering. If Frame A is sent by the same source as Frame B, then Frame A will always arrive before Frame B. No assumptions about ordering across sources is assumed.
-1. Frame Check Sequence, [FCS](https://en.wikipedia.org/wiki/Frame_check_sequence) for short, is assumed to be in use either at the transport protocol or at each MAC layer hop. However, no protection against malicious corruption is assumed.
+## <a id="framing"></a>帧封装(Framing)
 
-An implementation MAY "close" a transport connection due to protocol processing. When this occurs, it is assumed that the connection will have no further frames sent and all frames will be ignored.
+### <a id="transport-protocol"></a>传输协议
 
-RSocket as specified here has been designed for and tested with TCP, WebSocket, Aeron, and [HTTP/2 streams](https://http2.github.io/http2-spec/#StreamsLayer) as transport protocols.
+RSocket 协议使用较低级别的传输协议来承载 RSocket 帧。传输协议**必须**(MUST)提供以下功能:
 
-### Framing Protocol Usage
+1. 单播[可靠交付](https://en.wikipedia.org/wiki/Reliability_(computer_networking))，即在单个发送方和单个接收方之间具有“至少一次”消息交付保证。
+2. 面向连接并保留帧顺序。如果A帧和B帧是由相同的源发送的，那么A帧**必须**(MUST)在B帧之前到达。不假定跨源的顺序。
+3. 帧检查序列，简称 [FCS](https://en.wikipedia.org/wiki/Frame_check_sequence)，假定在传输协议或每个 MAC 层跃处使用。但是，不假定有防止恶意破坏的保护。
 
-Some supported transport protocols for RSocket may not support specific framing that preserves message boundaries. For these protocols, a framing protocol MUST be used with the RSocket frame that prepends the RSocket Frame Length.
+实现**可以**(MAY)出于协议处理而“关闭”传输连接。当这种情况发生时，假定该连接不会再发送任何帧，并且所有帧都将被忽略。
 
-The frame length field MUST be omitted if the transport protocol preserves message boundaries e.g. provides compatible framing. If, however, the transport protocol only provides a stream abstraction or can merge messages without preserving boundaries, or multiple transport protocols may be used, then the frame header MUST be used.
+本文定义的 RSocket 是为了使用 TCP、WebSocket、Aeron 和 [HTTP/2 streams](https://http2.github.io/http2-spec/#StreamsLayer) 作为传输协议而设计的，并且也用它们进行了测试。
 
-|  Transport Protocol            | Frame Length Field Required |
-|:-------------------------------|:----------------------------|
-| TCP                            | __YES__ |
-| WebSocket                      | __NO__  |
-| Aeron                          | __NO__  |
-| HTTP/2 Stream                  | __YES__ |
+### <a id="framing-protocol-usage"></a>分帧协议的使用
 
-### Framing Format
+一些支持用于 RSocket 的传输协议可能不支持帧封装以保留消息边界。对于这些协议，分帧协议**必须**(MUST)与 RSocket 帧一起使用，即在帧前附加*RSocket帧长度*。
 
-When using a transport protocol providing framing, the RSocket frame is simply encapsulated into the transport protocol messages directly.
+如果传输协议保留消息边界，例如提供兼容的帧封装，则帧长度字段**必须**(MUST)被省略。但是，如果传输协议只提供流抽象或可以合并消息而不保留边界，或者可能有多个传输协议被使用，则**必须**(MUST)使用帧标头。
+
+| 传输协议      | 要求帧长度字段 |
+| :------------ | :------------- |
+| TCP           | __是__         |
+| WebSocket     | __否__         |
+| Aeron         | __否__         |
+| HTTP/2 Stream | __是__         |
+
+### <a id="framing-format"></a>帧封装格式
+
+使用提供帧封装的传输协议时，RSocket 帧被直接封装到传输协议消息中。
 
 ```
     +-----------------------------------------------+
-    |                RSocket Frame          ...
+    |                RSocket 帧    ...
     |                                              
     +-----------------------------------------------+
 ```
 
-When using a transport protocol that does not provide compatible framing, the Frame Length MUST be prepended to the RSocket Frame.
+使用不提供兼容的帧帧封装的传输协议时，**必须**(MUST)在 RSocket 帧前加上帧长度。
 
 ```
      0                   1                   2
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                    Frame Length               |
+    |                  帧长度 24位                   |
     +-----------------------------------------------+
-    |                RSocket Frame          ...
+    |                RSocket 帧    ...
     |                                              
     +-----------------------------------------------+
 ```
+（译者按：原文插图均没有标注字段大小，是我补上的。）
 
-* __Frame Length__: (24 bits = max value 16,777,215) Unsigned 24-bit integer representing the length of Frame in bytes. Excluding the Frame Length field.
+* __帧长度(Frame Length)__：（24位，最大值16,777,215）无符号24位整数，以字节位单位表示帧的长度。长度不包括帧长度字段。
 
-__NOTE__: Byte ordering is big endian.
+__注__：字节顺序是大端序。
 
-### Max Frame Size
+### 最大帧尺寸
 
-RSocket Frames (Header + Payload) MUST be limited to 16,777,215 bytes, regardless of whether the utilized transport protocol requires the Frame Length field.
+RSocket 帧（标头加上负载）**必须**(MUST)限制在16,777,215字节以内，无论所使用的传输协议是否要求帧长度字段。
 
-### Frame Header Format
+### <a id="frame-header-format"></a>帧标头(Header)格式
 
-RSocket frames begin with a RSocket Frame Header. The general layout is given below.
+RSocket 帧以 RSocket 帧标头开始。常规布局如下所示。
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |0|                         Stream ID                           |
+    |0|                         流ID 31位                           |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |I|M|     Flags     |     Depends on Frame Type    ...
+    | 帧类型 6位 |I|M|标志位 10位含IM |     取决于帧类型    ...
     +-------------------------------+
 ```
 
-* __Stream ID__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer representing the stream Identifier for this frame or 0 to indicate the entire connection.
-  * Transport protocols that include demultiplexing, such as HTTP/2, MAY omit the Stream ID field if all parties agree. The means of negotiation and agreement is left to the transport protocol. 
-* __Frame Type__: (6 bits = max value 63) Type of Frame.
-* __Flags__: (10 bits) Any Flag bit not specifically indicated in the frame type should be set to 0 when sent and not interpreted on
-reception. Flags generally depend on Frame Type, but all frame types MUST provide space for the following flags:
-     * (__I__)gnore: Ignore frame if not understood
-     * (__M__)etadata: Metadata present
+* __流ID(Stream ID)__：（31位，最大值 2^31-1 = 2,147,483,647） 无符号31位整数，表示此帧的流标识符，0除外，0表示整个连接。
+  * 包含多路分解的传输协议，如 HTTP/2，如果各方同意，可以省略流ID字段。谈判和协议的方式留给传输协议。
+* __帧类型(Frame Type)__：（6位，最大值63） Type of Frame.
+* __标志位(Flags)__：（10位）任何在帧类型中没有明确指示的标志位在发送时应该设置为0，在接收时不进行解释。标志位通常取决于帧类型，但所有帧类型**必须**(MUST)为以下标志提供空间：
+     * 忽略( __I__ gnore)：如果不能理解此帧，则忽略
+     * 元数据( __M__ etadata)：存在元数据
 
-__NOTE__: Byte ordering is big endian.
+__注__：字节顺序是大端序。
 
-#### Handling Ignore Flag
+#### 处理忽略标志
 
-The (__I__)gnore flag is used for extension of the protocol. A value of 0 in a frame for this flag indicates the protocol can't
-ignore this frame. An implementation MAY send an ERROR[CONNECTION_ERROR] frame and close the underlying transport
-connection on reception of a frame that it does not understand with this bit not set.
+忽略( __I__ gnore)标志用于协议的扩展。帧中该标志的值为0表示协议不能忽略该帧。实现**可以**(MAY)在接收到不理解的帧且该标志未被设置时发送 ERROR[CONNECTION_ERROR] 帧并关闭底层传输连接。
 
-#### Frame Validation
+#### 帧验证(Validation)
 
-RSocket implementations may provide their own validation at the metadata level for specific frames. However, this is an application concern and not necessary for protocol processing.
+RSocket 实现可以在元数据级别为特定帧提供自己的验证机制。然而，这是应用程序应该关心的问题，对于协议处理来说不是必需的。
 
-#### Metadata Optional Header
+#### 元数据可选标头
 
-Specific Frame Types MAY contain Metadata. If that Frame Type supports both Data and Metadata, the optional Metadata header MUST be included. This metadata header is between the Frame Header and any payload.
+特定的帧类型**可以**(MAY)包含元数据。如果该帧类型同时支持数据和元数据，则**必须**(MUST)包含可选的元数据标头。这个元数据标头位于帧标头和任何负载之间。<br/>
+（译者留言：不太明白为什么 MUST included 的东西名字里有个 Optional。。）
 
-Metadata Length MUST be equal to the Frame Length minus the sum of the length of the Frame Header and the length of the Frame Payload, if present. If Metadata Length is not equal to this value, the frame is invalid and the receiver MUST send an ERROR[CONNECTION_ERROR] frame and close the underlying transport connection on reception unless the frame's IGNORE flag is set.
+元数据长度**必须**(MUST)等于帧长度减去帧标头长度和帧载荷长度（如果存在）的和。如果元数据长度不等于此值，则该帧无效，接收端**必须**(MUST)发送一个 ERROR[CONNECTION_ERROR] 帧，并在接收时关闭底层传输连接，除非该帧设置了IGNORE标志。
 
-On a frame with Data and Metadata:
+在具有数据和元数据的帧上：
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |              Metadata Length                  |
+    |              元数据长度 24位                   |
     +---------------------------------------------------------------+
-    |                       Metadata Payload                       ...
+    |                       元数据负载                              ...
     +---------------------------------------------------------------+
-    |                       Payload of Frame                       ...
-    +---------------------------------------------------------------+
-```
-
-On a frame that supports Data and Metadata, but Data length is 0:
-
-```
-     0                   1                   2                   3
-     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |              Metadata Length                  |
-    +---------------------------------------------------------------+
-    |                       Metadata Payload                       ...
+    |                       帧负载                                 ...
     +---------------------------------------------------------------+
 ```
 
-On a frame that only has Metadata, the Metadata length field is NOT needed:
+在支持数据和元数据，但数据长度为0的帧上：
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                       Metadata Payload                       ...
+    |              元数据长度 24位                   |
+    +---------------------------------------------------------------+
+    |                       元数据负载                              ...
     +---------------------------------------------------------------+
 ```
 
-
-* __Metadata Length__: (24 bits = max value 2^24-1 = 16,777,215) Unsigned 24-bit integer representing the length of Metadata in bytes. Excluding Metadata Length field.
-
-<a name="stream-identifiers"></a>
-### Stream Identifiers
-
-#### Generation
-
-Stream IDs are generated by a Requester. The lifetime of a Stream ID is determined by the request type, and the semantics of the stream based on its type.
-
-Stream ID of value __0__ is reserved for any operation involving the connection.
-
-A Stream ID MUST be locally unique for a Requester in a connection.
-
-Stream ID generation follows general guidelines for [HTTP/2](https://tools.ietf.org/html/rfc7540) with respect 
-to odd/even values. In other words, a client MUST generate odd Stream IDs, and a server MUST generate even Stream IDs.
-
-Stream IDs on the __client__ MUST start at __1__ and increment by 2 sequentially, such as 1, 3, 5, 7, etc.
-
-Stream IDs on the __server__ MUST start at __2__ and increment by 2 sequentially, such as 2, 4, 6, 8, etc.
-
-#### Lifetime
-
-Once the max Stream ID has been used (2^31-1), the Requester MAY re-use Stream IDs. A Responder MUST assume Stream IDs will be re-used.
-
-When the max Stream ID has been used:
-
-1) If Stream ID re-use is not employed:
-
-    - No new streams can be created, thus a new connection MUST be established to create new streams once the max has been met. 
-
-2) If Stream IDs are re-used:
-
-    - The Requester MUST re-use IDs by wrapping and restarting at ID 1 for client, and ID 2 for server, and incrementing sequentially by 2s as stated above.
-    - The Requester MUST skip IDs still in use. 
-    - The Responder MAY choose to ERROR[REJECT] any Stream ID if it considers the ID still in use. The Requester MAY retry on the next sequential Stream ID considered unused.
-    - If all Stream IDs are concurrently in use, no new streams can be created, thus a new connection MUST be established to create new streams.
-
-It is RECOMMENDED that Stream ID re-use only be used in combination with resumability. 
-
-### Frame Types
-
-|  Type                          | Value  | Description |
-|:-------------------------------|:-------|:------------|
-| __RESERVED__                                     | 0x00 | __Reserved__ |
-| [__SETUP__](#frame-setup)                         | 0x01 | __Setup__: Sent by client to initiate protocol processing. |
-| [__LEASE__](#frame-lease)                         | 0x02 | __Lease__: Sent by Responder to grant the ability to send requests. |
-| [__KEEPALIVE__](#frame-keepalive)                 | 0x03 | __Keepalive__: Connection keepalive. |
-| [__REQUEST_RESPONSE__](#frame-request-response)   | 0x04 | __Request Response__: Request single response. |
-| [__REQUEST_FNF__](#frame-fnf)                     | 0x05 | __Fire And Forget__: A single one-way message. |
-| [__REQUEST_STREAM__](#frame-request-stream)       | 0x06 | __Request Stream__: Request a completable stream. |
-| [__REQUEST_CHANNEL__](#frame-request-channel)     | 0x07 | __Request Channel__: Request a completable stream in both directions. |
-| [__REQUEST_N__](#frame-request-n)                 | 0x08 | __Request N__: Request N more items with Reactive Streams semantics. |
-| [__CANCEL__](#frame-cancel)                       | 0x09 | __Cancel Request__: Cancel outstanding request. |
-| [__PAYLOAD__](#frame-payload)                     | 0x0A | __Payload__: Payload on a stream. For example, response to a request, or message on a channel. |
-| [__ERROR__](#frame-error)                         | 0x0B | __Error__: Error at connection or application level. |
-| [__METADATA_PUSH__](#frame-metadata-push)         | 0x0C | __Metadata__: Asynchronous Metadata frame |
-| [__RESUME__](#frame-resume)                       | 0x0D | __Resume__: Replaces SETUP for Resuming Operation (optional) |
-| [__RESUME_OK__](#frame-resume-ok)                 | 0x0E | __Resume OK__ : Sent in response to a RESUME if resuming operation possible (optional) |
-| [__EXT__](#frame-ext)                             | 0x3F | __Extension Header__: Used To Extend more frame types as well as extensions. |
-
-<a name="frame-setup"></a>
-### SETUP Frame (0x01)
-
-Setup frames MUST always use Stream ID 0 as they pertain to the connection.
-
-The SETUP frame is sent by the client to inform the server of the parameters under which it desires
-to operate. The usage and message sequence used is shown in [Connection Establishment](#connection-establishment).
-
-One of the important parameters for a connection is the format, layout, and any schema of the data and metadata for
-frames. This is, for lack of a better term, referred to here as "MIME Type". An implementation MAY use typical MIME type
-values or MAY decide to use specific non-MIME type values to indicate format, layout, and any schema
-for data and metadata. The protocol implementation MUST NOT interpret the MIME type itself. This is an application
-concern only.
-
-The encoding format for Data and Metadata are included separately in the SETUP.
-
-Frame Contents
+在只有元数据的帧上，**不需要**(NOT needed)元数据长度字段:
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                         Stream ID = 0                         |
+    |                         元数据负载                            ...
+    +---------------------------------------------------------------+
+```
+
+
+* __元数据长度(Metadata Length)__：（24位，最大值 2^24-1 = 16,777,215）无符号24位整数，以字节为单位表示元数据的长度。不包括元数据长度字段。
+
+### <a id="stream-identifiers"></a>流标识符(Stream Identifiers)（流ID）
+
+#### 生成
+
+流ID由请求者生成。流ID的生命周期由请求类型和基于其类型的流语义决定。
+
+值为0的流ID，为涉及连接的任何操作保留。
+
+对于一个连接中的一个请求者来说，流ID**必须**(MUST)是本地唯一的。
+
+流ID生成遵循 [HTTP/2](https://tools.ietf.org/html/rfc7540) 关于奇/偶值的通用指导。即客户端**必须**(MUST)生成奇数流ID，而服务器**必须**(MUST)生成偶数流ID。
+
+客户端的流ID**必须**(MUST)从**1**开始，依次递增2，如1，3，5，7等。
+
+服务器的流ID**必须**(MUST)从**2**开始，依次递增2，如2，4，6，8等。
+
+#### 生命周期
+
+一旦最大流ID被使用（2^31-1），请求者**可以**(MAY)重用流ID。响应者**必须**(MUST)假定流ID会被重用。
+
+当最大流ID已被使用时：
+
+1. 如果不采用流ID重用：
+    - 无法再创建新的流，因此一旦达到最大值**必须**(MUST)建立一个新的连接以创建新流。
+
+2. 如果重用流ID:
+    - 请求者**必须**(MUST)重用ID，回绕ID值，用ID 1——客户端或ID 2——服务器重新开始，并如上所述按顺序递增2。
+    - 请求者**必须**(MUST)跳过仍在使用的ID。
+    - 如果响应者认为某个流ID仍在使用中，响应者**可以**(MAY)选择以错误[拒绝]应对该ID。请求者**可以**(MAY)在接下来的一个被认为未使用的流ID上重试。
+    - 如果所有流ID都在并发使用，则无法再创建新的流，因此**必须**(MUST)建立一个新的连接来创建新流。
+
+**建议**(RECOMMENDED)流ID重用仅与可恢复性结合使用。
+
+### <a id="frame-types"></a>帧类型
+
+| 类型                                            | 值   | 描述                                                                         |
+| :---------------------------------------------- | :--- | :--------------------------------------------------------------------------- |
+| __RESERVED__                                    | 0x00 | __保留值__                                                                   |
+| [__SETUP__](#frame-setup)                       | 0x01 | __建立(Setup)__：由客户端发送，用于启动协议处理。                            |
+| [__LEASE__](#frame-lease)                       | 0x02 | __租约(Lease)__：由响应者发送，授予发送请求的能力。                          |
+| [__KEEPALIVE__](#frame-keepalive)               | 0x03 | __存活检测(Keepalive)__：连接存活检测。                                      |
+| [__REQUEST_RESPONSE__](#frame-request-response) | 0x04 | __请求响应(Request Response)__：请求单个响应。                               |
+| [__REQUEST_FNF__](#frame-fnf)                   | 0x05 | __即发即弃(Fire And Forget)__：一条单向消息。                                |
+| [__REQUEST_STREAM__](#frame-request-stream)     | 0x06 | __请求流(Request Stream)__：请求一个可完成的流。                             |
+| [__REQUEST_CHANNEL__](#frame-request-channel)   | 0x07 | __请求通道(Request Channel)__：请求一个可完成的双向流。                      |
+| [__REQUEST_N__](#frame-request-n)               | 0x08 | __Request N__：以反应式流语义请求N个条目。                            |
+| [__CANCEL__](#frame-cancel)                     | 0x09 | __取消请求(Cancel Request)__：取消未完成的请求。                             |
+| [__PAYLOAD__](#frame-payload)                   | 0x0A | __负载(Payload)__：流上的负载。例如，对请求的响应，或通道上的消息。          |
+| [__ERROR__](#frame-error)                       | 0x0B | __错误(Error)__：连接或应用级别的错误。                                      |
+| [__METADATA_PUSH__](#frame-metadata-push)       | 0x0C | __元数据(Metadata)__：异步元数据帧                                           |
+| [__RESUME__](#frame-resume)                     | 0x0D | __恢复(Resume)__：替换 SETUP 用于恢复操作（可选）                            |
+| [__RESUME_OK__](#frame-resume-ok)               | 0x0E | __恢复成功(Resume OK)__ ：如果恢复操作可行，则作为 RESUME 的响应发送（可选） |
+| [__EXT__](#frame-ext)                           | 0x3F | __扩展标头(Extension Header)__：用于扩展更多的帧类型和扩展。                 |
+
+<a id="frame-setup"></a>
+### SETUP 帧 (0x01) （建立帧）
+
+Setup 帧**必须**(MUST)总是使用流ID 0，因为它们关乎整个连接。
+
+客户端发送 SETUP 帧，通知服务器它希望在哪些参数下进行操作。用法和使用消息顺序的说明位于[连接建立](#connection-establishment)部分。
+
+连接的重要参数之一是帧的数据和元数据的格式、布局和其他有关模式(schema)的信息。由于没有更好的术语，这里将其称为“MIME 类型”。实现**可以**(MAY)使用典型的 MIME 类型值，也**可以**(MAY)决定使用特定的非 MIME 类型值来指示数据和元数据的格式、布局和其他有关模式的信息。协议实现**禁止**(MUST NOT)自作主张地解释 MIME 类型。这是应用程序才需要关心的问题。
+
+数据和元数据的编码格式分别包含在 SETUP 中。
+
+帧内容
+
+```
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                           流ID = 0                            |
     +-----------+-+-+-+-+-----------+-------------------------------+
-    |Frame Type |0|M|R|L|  Flags    |
+    |  帧类型   |0|M|R|L|  标志位    |
     +-----------+-+-+-+-+-----------+-------------------------------+
-    |         Major Version         |        Minor Version          |
+    |         主版本号 16位          |         次要版本号 16位        |
     +-------------------------------+-------------------------------+
-    |0|                 Time Between KEEPALIVE Frames               |
+    |0|                KEEPALIVE 帧之间的时间间隔 31位                |
     +---------------------------------------------------------------+
-    |0|                       Max Lifetime                          |
+    |0|                      最大存活时间 31位                       |
     +---------------------------------------------------------------+
-    |         Token Length          | Resume Identification Token  ...
+    |         令牌长度 16位          | 恢复操作身份验证令牌  ...
     +---------------+-----------------------------------------------+
-    |  MIME Length  |   Metadata Encoding MIME Type                ...
+    | MIME 长度 8位 |    元数据编码 MIME 类型                       ...
     +---------------+-----------------------------------------------+
-    |  MIME Length  |     Data Encoding MIME Type                  ...
+    | MIME 长度 8位 |     数据编码 MIME 类型                        ...
     +---------------+-----------------------------------------------+
-                          Metadata & Setup Payload
+                          元数据和建立负载
 ```
 
-* __Frame Type__: (6 bits) 0x01
-* __Flags__: (10 bits)
-     * (__M__)etadata: Metadata present
-     * (__R__)esume Enable: Client requests resume capability if possible. Resume Identification Token present.
-     * (__L__)ease: Will honor LEASE (or not).
-* __Major Version__: (16 bits = max value 65,535) Unsigned 16-bit integer of Major version number of the protocol.
-* __Minor Version__: (16 bits = max value 65,535) Unsigned 16-bit integer of Minor version number of the protocol.
-* __Time Between KEEPALIVE Frames__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer of Time (in milliseconds) between KEEPALIVE frames that the client will send. Value MUST be > 0. 
-   * For server-to-server connections, a reasonable time interval between client KEEPALIVE frames is 500ms.
-   * For mobile-to-server connections, the time interval between client KEEPALIVE frames is often > 30,000ms.
-* __Max Lifetime__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer of Time (in milliseconds) that a client will allow a server to not respond to a KEEPALIVE before it is assumed to be dead. Value MUST be > 0. 
-* __Resume Identification Token Length__: (16 bits = max value 65,535) Unsigned 16-bit integer of Resume Identification Token Length in bytes. (Not present if R flag is not set)
-* __Resume Identification Token__: Token used for client resume identification (Not present if R flag is not set)
-* __MIME Length__: Encoding MIME Type Length in bytes.
-* __Encoding MIME Type__: MIME Type for encoding of Data and Metadata. This SHOULD be a US-ASCII string
-that includes the [Internet media type](https://en.wikipedia.org/wiki/Internet_media_type) specified
-in [RFC 2045](https://tools.ietf.org/html/rfc2045). Many are registered with
-[IANA](https://www.iana.org/assignments/media-types/media-types.xhtml) such as
-[CBOR](https://www.iana.org/assignments/media-types/application/cbor).
-[Suffix](http://www.iana.org/assignments/media-type-structured-suffix/media-type-structured-suffix.xml)
-rules MAY be used for handling layout. For example, `application/x.netflix+cbor` or
-`application/x.reactivesocket+cbor` or `application/x.netflix+json`. The string MUST NOT be null terminated.
-* __Setup Data__: includes payload describing connection capabilities of the endpoint sending the
-Setup header.
+* __帧类型__：（6位）0x01
+* __标志位__：（10位）
+     * 元数据( __M__ etadata)：存在元数据
+     * 启用恢复( __R__ esume Enable)：如果可能，客户端请求恢复功能。存在恢复身份验证令牌。
+     * 租约( __L__ ease)：将会履行 LEASE（或者反之）。
+* __主版本号(Major Version)__：（16位，最大值65,535）以无符号16位整数表示的协议主版本号。
+* __次要版本号(Minor Version)__：（16位，最大值65,535）以无符号16位整数表示的协议次要版本号。
 
-__NOTE__: A server that receives a SETUP frame that has (__R__)esume Enabled set, but does not support resuming operation, MUST reject the SETUP with an ERROR[REJECTED_SETUP]. 
+（译者按：有关协议版本的信息请看[官网](https://rsocket.io/about/protocol#status)，GitHub仓库的文档少了这一段）
+* __KEEPALIVE 帧之间的时间间隔__：（31位，最大值2^31-1 = 2,147,483,647）无符号31位整数，客户端发送 KEEPALIVE 帧的时间间隔（毫秒）。值**必须**(MUST)大于0。
+   * 对于服务器到服务器连接，客户端 KEEPALIVE 帧之间的合理时间间隔是500ms。
+   * 对于移动设备到服务器的连接，客户端 KEEPALIVE 帧之间的时间间隔通常大于30000ms。
+* __最大存活时间__：（31位，最大值2^31-1 = 2,147,483,647）无符号31位整数，表示客户端在假定服务器已死之前容许服务器不响应 KEEPALIVE 的时间（毫秒）。值必须大于0。
+* __恢复操作(Resume)身份验证令牌长度__：（16位，最大值65,535）以无符号16位整数表示的恢复操作身份验证令牌长度，以字节为单位。（如果未设置 R 标志则不存在）
+* __恢复操作身份验证令牌__：用于客户端恢复操作身份验证的令牌（如果未设置 R 标志则不存在）
+* __MIME 长度__：以字节表示的编码 MIME 类型长度。（译者按：8位的长度是我猜的，上图中标注的也是。）
+* __编码 MIME 类型__：数据和元数据编码的MIME类型。这**应该**(SHOULD)是一个包含 [RFC 2045](https://tools.ietf.org/html/rfc2045) 指定的互联网媒体类型的 US-ASCII 字符串。很多都在 [IANA](https://www.iana.org/assignments/media-types/media-types.xhtml) 注册，比如 [CBOR](https://www.iana.org/assignments/media-types/application/cbor)。[后缀](http://www.iana.org/assignments/media-type-structured-suffix/media-type-structured-suffix.xml)规则**可以**(MAY)用于处理布局。比如 `application/x.netflix+cbor` 或 `application/x.reactivesocket+cbor` 或 `application/x.netflix+json`。字符串**禁止**(MUST NOT)以空字符结束。
+* __建立数据__: 包括描述发送 Setup 标头的端点的连接功能的负载。
 
-<a name="frame-error"></a>
-### ERROR Frame (0x0B)
+__注__：如果服务器接收到一个设置了启用恢复标志的 Setup 帧，但服务器不支持恢复操作，则**必须**(MUST)用 ERROR[REJECTED_SETUP] 拒绝这次 SETUP。
 
-Error frames are used for errors on individual requests/streams as well as connection errors and in response to SETUP frames. 
+<a id="frame-error"></a>
+### ERROR 帧 (0x0B) （错误帧）
 
-Frame Contents
+Error 帧用于表示单个请求/流上的错误和连接错误，以及对 SETUP 帧的响应。
+
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|0|      Flags    |
+    | 帧类型    |0|0|    标志位      |
     +-----------+-+-+---------------+-------------------------------+
-    |                          Error Code                           |
+    |                           错误代码                             |
     +---------------------------------------------------------------+
-                               Error Data
+                                错误数据
 ```
 
-* __Frame Type__: (6 bits) 0x0B
-* __Error Code__: (32 bits = max value 2^31-1 = 2,147,483,647) Type of Error.
-     * See list of valid Error Codes below.
-* __Error Data__: includes Payload describing error information. Error Data SHOULD be a UTF-8 encoded string. The string MUST NOT be null terminated.
+* __帧类型__：（6位）0x0B
+* __错误代码(Error Code)__：（32位，最大值 2^31-1 = 2,147,483,647）错误类型。
+     * 请参阅下面的有效错误代码表。
+* __错误数据__：包含描述错误信息的负载。错误数据**应该**(SHOULD)是 UTF-8 编码的字符串。字符串**禁止**(MUST NOT)以空字符结束。
 
-A Stream ID of 0 means the error pertains to the connection., including connection establishment. A Stream ID > 0 means the error pertains to a given stream.
+为0的流ID表示错误与连接有关，包括连接的建立。大于0的流ID表示错误属于给定的流。
 
-The Error Data is typically an Exception message, but could include stringified stacktrace information if appropriate.  
+错误数据通常是一个异常消息，但如果合适，也可以包含以字符串表示的堆栈跟踪信息。
 
-#### Error Codes
+#### 错误代码
 
-|  Type                          | Value      | Description |
-|:-------------------------------|:-----------|:------------|
-| __RESERVED__                   | 0x00000000 | __Reserved__ |
-| __INVALID_SETUP__              | 0x00000001 | The Setup frame is invalid for the server (it could be that the client is too recent for the old server). Stream ID MUST be 0. |
-| __UNSUPPORTED_SETUP__          | 0x00000002 | Some (or all) of the parameters specified by the client are unsupported by the server. Stream ID MUST be 0. |
-| __REJECTED_SETUP__             | 0x00000003 | The server rejected the setup, it can specify the reason in the payload. Stream ID MUST be 0. |
-| __REJECTED_RESUME__            | 0x00000004 | The server rejected the resume, it can specify the reason in the payload. Stream ID MUST be 0. |
-| __CONNECTION_ERROR__           | 0x00000101 | The connection is being terminated. Stream ID MUST be 0. Sender or Receiver of this frame MAY close the connection immediately without waiting for outstanding streams to terminate.|
-| __CONNECTION_CLOSE__           | 0x00000102 | The connection is being terminated. Stream ID MUST be 0. Sender or Receiver of this frame MUST wait for outstanding streams to terminate before closing the connection. New requests MAY not be accepted.|
-| __APPLICATION_ERROR__          | 0x00000201 | Application layer logic generating a Reactive Streams _onError_ event. Stream ID MUST be > 0. |
-| __REJECTED__                   | 0x00000202 | Despite being a valid request, the Responder decided to reject it. The Responder guarantees that it didn't process the request. The reason for the rejection is explained in the Error Data section. Stream ID MUST be > 0. |
-| __CANCELED__                   | 0x00000203 | The Responder canceled the request but may have started processing it (similar to REJECTED but doesn't guarantee lack of side-effects). Stream ID MUST be > 0. |
-| __INVALID__                    | 0x00000204 | The request is invalid. Stream ID MUST be > 0. |
-| __RESERVED__                   | 0xFFFFFFFF | __Reserved for Extension Use__ |
+| 类型                  | 值         | 描述                                                                                                                                 |
+| :-------------------- | :--------- | :----------------------------------------------------------------------------------------------------------------------------------- |
+| __RESERVED__          | 0x00000000 | __保留值__                                                                                                                           |
+| __INVALID_SETUP__     | 0x00000001 | Setup 帧对服务器无效（可能是客户端对旧服务器来说太新了）。流ID**必须**(MUST)为0。                                                    |
+| __UNSUPPORTED_SETUP__ | 0x00000002 | 服务器不支持客户端指定的某些（或全部）参数。流ID**必须**(MUST)为0。                                                                  |
+| __REJECTED_SETUP__    | 0x00000003 | 服务器拒绝建立连接，可以在负载中具体说明原因。流ID**必须**(MUST)为0。                                                                |
+| __REJECTED_RESUME__   | 0x00000004 | 服务器拒绝恢复连接，可以在负载中具体说明原因。流ID**必须**(MUST)为0。                                                                |
+| __CONNECTION_ERROR__  | 0x00000101 | 连接正在被终止。流ID**必须**(MUST)为0。此帧的发送方或接收方**可以**(MAY)立即关闭连接，而不必等待未完成的流终止。                     |
+| __CONNECTION_CLOSE__  | 0x00000102 | 连接正在被终止。流ID**必须**(MUST)为0。发送方或接收方在关闭连接之前**必须**(MUST)等待未完成的流终止。新的请求**可以**(MAY)不被接受。 |
+| __APPLICATION_ERROR__ | 0x00000201 | 应用层逻辑生成了一个反应式流 _onError_ 事件。 流ID**必须**(MUST)大于0。                                                              |
+| __REJECTED__          | 0x00000202 | 尽管是一个有效的请求，响应者还是决定拒绝它。响应者保证没有处理请求。错误数据部分解释了拒绝的原因。流ID**必须**(MUST)大于0。          |
+| __CANCELED__          | 0x00000203 | 响应者取消了请求，但可能已经开始处理它（类似于 REJECTED，但不保证没有副作用）。流ID**必须**(MUST)大于0。                              |
+| __INVALID__           | 0x00000204 | 请求无效。流ID**必须**(MUST)大于0。                                                                                                  |
+| __RESERVED__          | 0xFFFFFFFF | __作扩展用途的保留值__                                                                                                               |
 
-__NOTE__: Unsed values in the range of 0x0001 to 0x00300 are reserved for future protocol use. Values in the range of 0x00301 to 0xFFFFFFFE are reserved for application layer errors.
+__注__：从0x0001到0x00300范围内未使用的值保留以供协议将来使用。从0x00301到0xFFFFFFFE范围内的值保留以供表示应用层错误。
 
-When this document refers to a specific Error Code as a frame, it uses this pattern: ERROR[error_code] or ERROR[error_code|error_code]
+当本文引用特定的错误码作为一个帧时，使用以下样式：ERROR[error_code] 或 ERROR[error_code|error_code]
 
-For example:
+例如：
 
-- ERROR[INVALID_SETUP] means the ERROR frame with the INVALID_SETUP code
-- ERROR[REJECTED] means the ERROR frame with the REJECTED code
-- ERROR[CONNECTION_ERROR|REJECTED_RESUME] means the ERROR frame with either the CONNECTION_ERROR or REJECTED_RESUME code
+- ERROR[INVALID_SETUP] 表示错误代码为 INVALID_SETUP 的错误帧
+- ERROR[REJECTED] 表示错误代码为 REJECTED 的错误帧
+- ERROR[CONNECTION_ERROR|REJECTED_RESUME] 表示错误代码为 CONNECTION_ERROR 或REJECTED_RESUME 的错误帧
 
 <a name="frame-lease"></a>
-### LEASE Frame (0x02)
+### LEASE 帧 (0x02) （租约帧）
 
-Lease frames MAY be sent by the client-side or server-side Responders and inform the
-Requester that it may send Requests for a period of time and how many it may send during that duration.
-See [Lease Semantics](#lease-semantics) for more information.
+Lease 帧可以由客户端或服务器响应者发送，并通知请求者它可以在一段时间内发送请求以及在此期间可以发送多少请求。参见[租约语义](#lease-semantics)了解更多信息。
 
-The last received LEASE frame overrides all previous LEASE frame values.
+最后一次接收到的 LEASE 帧覆盖之前所有的 LEASE 帧值。
 
-Lease frames MUST always use Stream ID 0 as they pertain to the Connection.
+Lease 帧**必须**(MUST)总是使用流ID 0，因为它们关乎整个连接。
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                         Stream ID = 0                         |
+    |                           流ID = 0                            |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|M|     Flags     |
+    |  帧类型    |0|M|     标志位    |
     +-----------+-+-+---------------+-------------------------------+
-    |0|                       Time-To-Live                          |
+    |0|                        生存时间 31位                         |
     +---------------------------------------------------------------+
-    |0|                     Number of Requests                      |
+    |0|                        请求数量 31位                         |
     +---------------------------------------------------------------+
-                                Metadata
+                                  元数据
 ```
 
-* __Frame Type__: (6 bits) 0x02 
-* __Flags__: (10 bits)
-     * (__M__)etadata: Metadata present
-* __Time-To-Live (TTL)__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer of Time (in milliseconds) for validity of LEASE from time of reception. Value MUST be > 0. 
-* __Number of Requests__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer of Number of Requests that may be sent until next LEASE. Value MUST be > 0. 
+* __帧类型__：（6位） 0x02 
+* __标志位__：（10位）
+     * 元数据(__M__)：存在元数据
+* __生存时间(Time-To-Live, TTL)__：（31位，最大值 2^31-1 = 2,147,483,647）无符号31位整数，表示从接收时间算起 LEASE 的有效时间（毫秒）。值**必须**(MUST)大于0。
+* __请求数量(Number of Requests)__：（31位，最大值 2^31-1 = 2,147,483,647）无符号31位整数，表示在下次 LEASE 之前可以发起的请求数。值**必须**(MUST)大于0。
 
-A Responder implementation MAY stop all further requests by sending a LEASE with a value of 0 for __Number of Requests__ or __Time-To-Live__.
+响应者实现可以通过发送一个**请求数量**或**生存时间**值为0的 LEASE 来阻止所有接下来的请求。<br/>
+（译者留言：这里晕了，到底能不能为0啊。。）
 
-When a LEASE expires due to time, the value of the __Number of Requests__ that a Requester may make is implicitly 0.
+当 LEASE 到期后，请求者可以发起的**请求数量**的值隐式地为0。
 
-This frame only supports Metadata, so the Metadata Length header MUST NOT be included, even if the (M)etadata flag is set true.
+这个类型的帧只支持元数据，所以**禁止**(MUST NOT)包含元数据长度标头，即使元数据标志被设置为 true。
 
-<a name="frame-keepalive"></a>
-### KEEPALIVE Frame (0x03)
+<a id="frame-keepalive"></a>
+### KEEPALIVE 帧 (0x03) （存活检测帧）
 
-KEEPALIVE frames MUST always use Stream ID 0 as they pertain to the Connection.
+KEEPALIVE 帧**必须**(MUST)总是使用流ID 0，因为它们关乎整个连接。
 
-KEEPALIVE frames MUST be initiated by the client and sent periodically with the (__R__)espond flag set.
+KEEPALIVE 帧**必须**(MUST)由客户端发起并定期发送，同时设置响应标志。
 
-KEEPALIVE frames MAY be initiated by the server and sent upon application request with the (__R__)espond flag set.
+KEEPALIVE 帧**可以**(MAY)由服务器发起，并在收到设置了响应标志的应用程序请求时发送。
 
-Reception of a KEEPALIVE frame with the (__R__)espond flag set MUST cause a client or server to send
-back a KEEPALIVE with the (__R__)espond flag __NOT__ set. The data in the received KEEPALIVE MUST be
-echoed back in the generated KEEPALIVE.
+接收到带有响应标志的 KEEPALIVE 帧**必须**(MUST)导致客户端或服务器发回**不带有**(NOT set)响应标志的 KEEPALIVE 帧。接收到的 KEEPALIVE 中的数据**必须**(MUST)在生成的 KEEPALIVE 中原封不动地发回(echoed back)。
 
-Reception of a KEEPALIVE by a server indicates to the server that the client is alive.
+如果服务器接收到 KEEPALIVE，则表示客户端是活的。
 
-Reception of a KEEPALIVE by a client indicates to the client that the server is alive.
+如果客户端接收到 KEEPALIVE，则表示服务器是活的。
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                         Stream ID = 0                         |
+    |                           流ID = 0                            |
     +-----------+-+-+-+-------------+-------------------------------+
-    |Frame Type |0|0|R|    Flags    |
+    |  帧类型   |0|0|R|    标志位    |
     +-----------+-+-+-+-------------+-------------------------------+
-    |0|                  Last Received Position                     |
+    |0|                     最后接收位置 63位                        |
     +                                                               +
     |                                                               |
     +---------------------------------------------------------------+
-                                  Data
+                                  数据
 ```
 
-* __Frame Type__: (6 bits) 0x03
-* __Flags__: (10 bits)
-     * (__R__)espond with KEEPALIVE or not
-* __Last Received Position__: (63 bits = max value 2^63-1) Unsigned 63-bit long of Resume Last Received Position. Value MUST be > 0. (optional. Set to all 0s when not supported.)
-* __Data__: Data attached to a KEEPALIVE.
+* __帧类型__：（6位） 0x03
+* __标志位__：（10位）
+     * 要不要用 KEEPALIVE 进行响应( __R__ espond)
+* __最后接收位置(Last Received Position)__：（63位，最大值 2^63-1）无符号63位整数，向恢复系统指示最后接收位置。值**必须**(MUST)大于0。（可选。如果不支持则设置成0）<br/>
+  （译者按：这个字段和恢复机制有关，下文有详述，也可以参考 [#300](https://github.com/rsocket/rsocket/issues/300#issuecomment-597643980)）
+* __数据__：附加于 KEEPALIVE 的数据。
 
-<a name="frame-request-response"></a>
-### REQUEST_RESPONSE Frame (0x04)
+<a id="frame-request-response"></a>
+### REQUEST_RESPONSE 帧 (0x04) （请求响应帧）
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+-+-------------+-------------------------------+
-    |Frame Type |0|M|F|     Flags   |
+    |  帧类型   |0|M|F|    标志位    |
     +-------------------------------+
-                         Metadata & Request Data
+                              元数据和请求数据
 ```
 
-* __Frame Type__: (6 bits) 0x04
-* __Flags__: (10 bits)
-    * (__M__)etadata: Metadata present
-    * (__F__)ollows: More fragments follow this fragment.
-* __Request Data__: identification of the service being requested along with parameters for the request.
+* __帧类型__：（6位） 0x04
+* __标志位__：（10位）
+    * 元数据(__M__)：存在元数据
+    * 跟随( __F__ ollows)：还有更多的片段跟随着这个片段。
+* __请求数据__：被请求的服务的标识以及请求的参数。
 
-<a name="frame-fnf"></a>
-### REQUEST_FNF (Fire-n-Forget) Frame (0x05)
+<a id="frame-fnf"></a>
+### REQUEST_FNF (Fire-n-Forget) 帧 (0x05) （即发即弃帧）
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+-+-------------+-------------------------------+
-    |Frame Type |0|M|F|    Flags    |
+    |  帧类型   |0|M|F|    标志位    |
     +-------------------------------+
-                          Metadata & Request Data
+                              元数据和请求数据
 ```
 
-* __Frame Type__: (6 bits) 0x05
-* __Flags__: (10 bits)
-    * (__M__)etadata: Metadata present
-    * (__F__)ollows: More fragments follow this fragment.
-* __Request Data__: identification of the service being requested along with parameters for the request.
+* __帧类型__：0x05
+* __标志位__：同上
+* __请求数据__：（译者按：其实就是一段可以自定义的二进制数据罢了）
 
-<a name="frame-request-stream"></a>
-### REQUEST_STREAM Frame (0x06)
+<a id="frame-request-stream"></a>
+### REQUEST_STREAM 帧 (0x06) （请求流帧）
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+-+-------------+-------------------------------+
-    |Frame Type |0|M|F|    Flags    |
+    |  帧类型   |0|M|F|    标志位    |
     +-------------------------------+-------------------------------+
-    |0|                    Initial Request N                        |
+    |0|                      初始 Request N                         |
     +---------------------------------------------------------------+
-                          Metadata & Request Data
+                             元数据和请求数据
 ```
 
-* __Frame Type__: (6 bits) 0x06
-* __Flags__: (10 bits)
-    * (__M__)etadata: Metadata present
-    * (__F__)ollows: More fragments follow this fragment.
-* __Initial Request N__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer representing the initial number of items to request. Value MUST be > 0.
-* __Request Data__: identification of the service being requested along with parameters for the request.
+* __帧类型__：0x06
+* __标志位__：同上
+* __初始 Request N__：（31位，最大值 2^31-1 = 2,147,483,647）无符号31位整数，表示初始请求条目数量。值**必须**(MUST)大于0。
+* __请求数据__
 
-See [Flow Control: Reactive Streams Semantics](#flow-control-reactive-streams) for more information on RequestN behavior.
+有关 RequestN 行为的更多信息参阅 [*流量控制：反应式流语义*](#flow-control-reactive-streams)。
 
-<a name="frame-request-channel"></a>
-### REQUEST_CHANNEL Frame (0x07)
+<a id="frame-request-channel"></a>
+### REQUEST_CHANNEL 帧 (0x07) （请求通道帧）
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+-+-+-----------+-------------------------------+
-    |Frame Type |0|M|F|C|  Flags    |
+    |  帧类型   |0|M|F|C|  标志位    |
     +-------------------------------+-------------------------------+
-    |0|                    Initial Request N                        |
+    |0|                      初始 Request N                         |
     +---------------------------------------------------------------+
-                           Metadata & Request Data
+                             元数据和请求数据
 ```
 
-* __Frame Type__: (6 bits) 0x07
-* __Flags__: (10 bits)
-    * (__M__)etadata: Metadata present
-    * (__F__)ollows: More fragments follow this fragment.
-    * (__C__)omplete: bit to indicate stream completion.
-	   * If set, `onComplete()` or equivalent will be invoked on Subscriber/Observer.
-* __Initial Request N__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer representing the initial request N value for channel. Value MUST be > 0.
-* __Request Data__: identification of the service being requested along with parameters for the request.
+* __帧类型__：0x07
+* __标志位__：
+    * __M__，__F__
+    * 完成( __C__ omplete)：指示流完成的标志位。
+	   * 如果设置了，将在订阅者/观察者上调用 `onComplete()` 或等价的方法。
+* __初始 Request N__
+* __请求数据__
 
-A requester MUST send only __one__ REQUEST_CHANNEL frame. Subsequent messages from requester to responder MUST be sent as PAYLOAD frames. 
+请求者**只能**(MUST only)发送**一个** REQUEST_CHANNEL 帧。从请求者到响应者的后续消息**必须**(MUST)发送为 PAYLOAD 帧。
 
-A requester MUST __not__ send PAYLOAD frames after the REQUEST_CHANNEL frame until the responder sends a REQUEST_N frame granting credits for number of PAYLOADs able to be sent.
+请求者在 REQUEST_CHANNEL 帧之后**必须**(MUST)等到响应者发送一个 REQUEST_N 帧授予可发送的 PAYLOAD 数量信用之后，才能发送 PAYLOAD 帧。
 
-See Flow Control: Reactive Streams Semantics for more information on RequestN behavior.
+有关 RequestN 行为的更多信息参阅 *流量控制：反应式流语义*。
 
-<a name="frame-request-n"></a>
-### REQUEST_N Frame (0x08)
+<a id="frame-request-n"></a>
+### REQUEST_N 帧 (0x08)
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|0|     Flags     |
+    |  帧类型   |0|0|     标志位     |
     +-------------------------------+-------------------------------+
     |0|                         Request N                           |
     +---------------------------------------------------------------+
 ```
 
-* __Frame Type__: (6 bits) 0x08
-* __Request N__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer representing the number of items to request. Value MUST be > 0.
+* __帧类型__：0x08
+* __Request N__：（31位，最大值 2^31-1 = 2,147,483,647）无符号31位整数，表示请求的条目数量。值**必须**(MUST)大于0。
 
-See Flow Control: Reactive Streams Semantics for more information on RequestN behavior.
+有关 RequestN 行为的更多信息参阅 *流量控制：反应式流语义*。
 
-<a name="frame-cancel"></a>
-### CANCEL Frame (0x09)
+<a id="frame-cancel"></a>
+### CANCEL 帧 (0x09)
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|0|    Flags      |
+    |  帧类型   |0|0|     标志位     |
     +-------------------------------+-------------------------------+
 ```
 
-* __Frame Type__: (6 bits) 0x09
+* __帧类型__：0x09
 
-<a name="frame-payload"></a>
-### PAYLOAD Frame (0x0A)
+<a id="frame-payload"></a>
+### PAYLOAD 帧 (0x0A) （负载帧）
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+-+-+-+---------+-------------------------------+
-    |Frame Type |0|M|F|C|N|  Flags  |
+    |  帧类型   |0|M|F|C|N|  标志位  |
     +-------------------------------+-------------------------------+
-                         Metadata & Data
+                               元数据和数据
 ```
 
-* __Frame Type__: (6 bits) 0x0A
-* __Flags__: (10 bits)
-    * (__M__)etadata: Metadata Present.
-    * (__F__)ollows: More fragments follow this fragment.
-    * (__C__)omplete: bit to indicate stream completion.
-       * If set, `onComplete()` or equivalent will be invoked on Subscriber/Observer.
-    * (__N__)ext: bit to indicate Next (Payload Data and/or Metadata present).
-       * If set, `onNext(Payload)` or equivalent will be invoked on Subscriber/Observer.
-* __Payload Data__: payload for Reactive Streams onNext.
+* __帧类型__：0x0A
+* __标志位__：
+    * __M__，__F__，__C__
+    * 其后( __N__ ext)：指示其后（的负载数据或元数据存在）的标志位。
+       * 如果设置了，将在订阅者/观察者上调用 `onNext(Payload)` 或等价的方法。
+* __负载数据__：反应式流 onNext 的负载.
 
-Valid combinations of (C)omplete and (N)ext flags are:
+完成(__C__)和其后(__N__)标志的有效组合是：
 
-- Both (C)omplete and (N)ext set meaning PAYLOAD contains data and signals stream completion.
-  - For example: An Observable stream receiving `onNext(payload)` followed by `onComplete()`.
-- Just (C)omplete set meaning PAYLOAD contains no data and only signals stream completion.
-  - For example: An Observable stream receiving `onComplete()`.
-- Just (N)ext set meaning PAYLOAD contains data stream is NOT completed.
-  - For example: An Observable stream receiving `onNext(payload)`.
+- 同时设置C和N表示 PAYLOAD 包含数据并指示流完成。
+  - 例如：一个 Observable 流接收到 `onNext(payload)` 之后又收到 `onComplete()`。
+- 仅设置C表示 PAYLOAD 不包含任何数据，仅指示流完成。
+  - 例如：一个 Observable 流接收到 `onComplete()`。
+- 仅设置N表示 PAYLOAD 包含数据，流还**未**完成.
+  - 例如：一个 Observable 流接收到 `onNext(payload)`。
 
-A PAYLOAD MUST NOT have both (C)complete and (N)ext empty (false).
+PAYLOAD **禁止**(MUST NOT)同时把C和N设置为空(false)。
 
-The reason for the (N)ext flag instead of just deriving from Data length being > 0 is that 0 length data can be considered a valid PAYLOAD resulting in a delivery to the application layer with a PAYLOAD containing 0 bytes of data. 
+使用N标志而不是直接用数据长度是否大于0来判定的原因是，长度为0的数据可以被认为是有效的 PAYLOAD，从而可以向应用层传递一个包含0长度数据的 PAYLOAD。
 
-For example: An Observable stream receiving data via `onNext(payload)` where payload contains 0 bytes of data.
+例如：一个 Observable 流通过 `onNext(payload)` 收到数据，其中负载包含0字节数据。
 
-<a name="frame-metadata-push"></a>
-### METADATA_PUSH Frame (0x0C)
+<a id="frame-metadata-push"></a>
+### METADATA_PUSH 帧 (0x0C) （元数据推送帧）
 
-A Metadata Push frame can be used to send asynchronous metadata notifications from a Requester or
-Responder to its peer.
+元数据推送帧可用于请求者或响应者向对方发送异步元数据通知。
 
-METADATA_PUSH frames MUST always use Stream ID 0 as they pertain to the Connection.
+METADATA_PUSH 帧**必须**(MUST)总是使用流ID 0，因为它们关乎整个连接。
 
-Metadata tied to a particular stream uses the individual Payload frame Metadata flag.
+绑定到特定流的元数据使用单独的 Payload 帧元数据标志。
 
-Frame Contents
+帧内容
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                         Stream ID = 0                         |
+    |                           流ID = 0                            |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|1|     Flags     |
+    |  帧类型   |0|1|     标志位     |
     +-------------------------------+-------------------------------+
-                                Metadata
+                                 元数据
 ```
 
-* __Frame Type__: (6 bits) 0x0C
+* __帧类型__：0x0C
 
-This frame only supports Metadata, so the Metadata Length header MUST NOT be included.
+这个帧类型只支持元数据，所以**禁止**(MUST NOT)包含元数据长度标头。
 
-<a name="frame-ext"></a>
-### EXT (Extension) Frame (0x3F)
+<a id="frame-ext"></a>
+### EXT (Extension) 帧 (0x3F) （扩展帧）
 
-The general format for an extension frame is given below.
+扩展帧的一般格式如下所示。
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                           Stream ID                           |
+    |                             流ID                              |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |I|M|    Flags      |
+    |  帧类型   |I|M|    标志位      |
     +-------------------------------+-------------------------------+
-    |0|                      Extended Type                          |
+    |0|                          扩展类型                            |
     +---------------------------------------------------------------+
-                          Depends on Extended Type...
+                          取决于扩展类型。。。
 ```
 
-* __Frame Type__: (6 bits) 0x3F
-* __Flags__: (10 bits)
-    * (__I__)gnore: Can the frame be ignored if not understood?
-    * (__M__)etadata: Metadata Present.
-* __Extended Type__: (31 bits = max value 2^31-1 = 2,147,483,647) Unsigned 31-bit integer of Extended type information. Value MUST be > 0.
+* __帧类型__：0x3F
+* __标志位__
+* __扩展类型(Extended Type)__：（31位，最大值 2^31-1 = 2,147,483,647）无符号31位整数，表示扩展类型。值**必须**(MUST)大于0。
 
-## Resuming Operation
 
-Due to the large number of active requests for RSocket, it is often necessary to provide the ability for resuming operation on transport failure. This behavior is totally optional for operation and may be supported or not based on an implementation choice.
+## <a id="resuming-operation"></a>恢复运行
 
-### Assumptions
+（译者按：原标题为 Resuming Operation，Operation理解为运行或操作都说得通）
 
-RSocket resumption exists only for specific cases. It is not intended to be an “always works” solution. If resuming operation is not possible, the connection should be terminated with an ERROR as specified by the protocol definition.
+由于 RSocket 有大量活跃的请求，因此通常需要提供在发生传输故障后恢复运转的能力。这种行为对于运维来说是完全可选的，根据实现的选择，可能支持也可能不支持。
 
-1. Resumption is optional behavior for implementations. But highly suggested. Clients and Servers should assume NO resumption capability by default.
-1. Resumption is an optimistic operation. It may not always succeed.
-1. Resumption is desired to be fast and require a minimum of state to be exchanged.
-1. Resumption is designed for loss of connectivity and assumes client and server state is maintained across connectivity loss. I.e. there is no assumption of loss of state by either end. This is very important as without it, all the requirements of "guaranteed messaging" come into play.
-1. Resumption assumes no changes to Lease, Data format (encoding), etc. for resuming operation. i.e. A client is not allowed to change the metadata MIME type or the data MIME type or version, etc. when resuming operation.
-1. Resumption is always initiated by the client and either allowed or denied by the server.
-1. Resumption makes no assumptions of application state for delivered frames with respect to atomicity, transactionality, etc. See above.
+### 假定
 
-### Implied Position
+RSocket 的恢复只在特定情况下存在。它并不是一个“始终有效”的解决方案。如果恢复是不可能的，根据协议定义，连接应该终止于一个 ERROR。
 
-Resuming operation requires knowing the position of data reception of the previous connection. For this to be simplified, the underlying transport is assumed to support contiguous delivery of data on a per frame basis. In other words, partial frames are not delivered for processing nor are gaps allowed in the stream of frames sent by either the client or server. The current list of supported transports (TCP, WebSocket, and Aeron) all satisfy this requirement or can be made to do so in the case of TCP.
+1. 恢复是实现的可选行为。但强烈建议实现它。默认情况下，客户端和服务器应该假定**没有**恢复能力。
+2. 恢复是一种乐观操作。它并不总是能成功。
+3. 我们希望恢复的速度尽可能快，并且需要的状态交换尽可能少。
+4. 恢复是为连接丢失而设计的，并假定客户端和服务器状态在连接丢失时保持不变。也就是说，没有任何一端状态丢失的假定。这是非常重要的，因为没有它，“可靠消息传递”的所有需求都将发挥作用。
+5. 恢复操作假定没有更改租约、数据格式（编码）等。即客户端在恢复时不允许更改元数据 MIME 类型或数据 MIME 类型或版本等。
+6. 恢复总是由客户端发起，由服务器允许或拒绝。
+7. 恢复不假定与已经发送的帧的原子性、事务性等有关的应用程序状态。见上。
 
-As a Requester or Responder __sends__ REQUEST_RESPONSE, REQUEST_FNF, REQUEST_STREAM, REQUEST_CHANNEL, REQUEST_N, CANCEL, ERROR, or PAYLOAD frames, it maintains a __position__ of that frame within the connection in that direction. This is a 64-bit value that starts at 0. As a Requester or Responder __receives__ those tracked frames, it maintains an __implied position__ of that frame within the connection in that direction. This is also a 64-bit value that starts at 0.  The positions are calculated based on the length of encoded frames without the frame length field after any fragmentation is applied.
+### 隐含位置
 
-The reason this is “implied” is that the position is not included in each frame and is inferred simply by the message being sent/received on the connection in relation to previous frames.
+恢复需要知道前一个连接的数据接收位置。为了简化这一点，假定底层传输支持以帧为基础的连续数据传输。换句话说，不允许发送用于加工的不完整帧，也不允许在客户端或服务器发送的帧流中出现缺口。当前支持的传输（TCP、WebSocket 和 Aeron）都满足这一要求，或者在 TCP 的情况下可以实现。
 
-This position will be used to identify the location for resuming operation to begin.
+当一个请求者或响应者发送 REQUEST_RESPONSE、REQUEST_FNF、REQUEST_STREAM、REQUEST_CHANNEL、REQUEST_N、CANCEL、ERROR 或 PAYLOAD 帧时，它在该方向的连接中维护了一个帧**位置**数据。这是一个从0开始的64位值。当请求者或响应者接收到那些跟踪的帧时，它在该方向的连接中维护了该帧的**隐含位置**。这也是一个从0开始的64位值。位置是根据应用了所有分片手段后去除了帧长度字段的已编码帧的长度计算的。
 
-Frame types outside REQUEST(s), REQUEST_N, CANCEL, ERROR, and PAYLOAD do not have assigned (nor implied) positions.
+这个位置是“隐含”的原因是，每一帧都不包含位置数据，它只是通过连接上相对前一帧发出/收到的消息被推断出来的。
 
-When a client sends a RESUME frame, it sends two implied positions: the last frame that was received from the server; the earliest frame position it still retains.  The server can make a determination on whether resumption is possible: have all frames past the client's last-received position been retained? and has the client retained all frames past the server's last-retained position.  If resumption is allowed to continue, the server sends a RESUME_OK frame, indicating its last-received position.
+此位置将用于确定恢复后开始的位置。
 
-### Client Lifetime Management
+除了各种 REQUEST、REQUEST_N、CANCEL、ERROR 和 PAYLOAD 之外的帧类型都没有指定的（或隐含的）位置。
 
-Client lifetime management for servers MUST be extended to incorporate the length of time a client may successfully attempt resumption passed a transport disconnect. The means of client lifetime management are totally up to the implementation.
+当客户端发送一个 RESUME 帧时，它会发送两个隐含位置：从服务器接收到的最后一帧的位置；客户端仍然保留的最早一帧的位置。服务器可以就恢复是否可行做出决定：自己是否保留了客户端最后接收位置之后的所有帧呢？以及，客户端是否保留了服务器最后保留位置之后的所有帧呢？如果允许恢复继续，服务器会发送一个 RESUME_OK 帧，它指示了服务器的最后接收位置。
 
-### Resume Operation
+### 客户生命周期管理
 
-All ERROR frames sent MUST be CONNECTION_ERROR or REJECTED_RESUME error code.
+服务器的客户端生命周期管理**必须**(MUST)扩展到可以包含客户端经过传输连接断开又尝试恢复并成功的时间长度。客户端生命周期管理的手段完全取决于实现。
 
-Client side resumption operation starts when the client desires to try to resume and starts a new transport connection. The operation then proceeds as the following:
+### 恢复操作
 
-* Client sends RESUME frame. The client MUST NOT send any other frame types until resumption succeeds. The RESUME Identification Token MUST be the token used in the original SETUP frame. The RESUME Last Received Position field MUST be the last successfully received implied position from the server.
-* Client waits for either a RESUME_OK or ERROR[CONNECTION_ERROR|REJECTED_RESUME] frame from the server.
-* On receiving an ERROR[REJECTED_RESUME] frame, the client MUST NOT attempt resumption again.
-* On receiving a RESUME_OK, the client:
-    * MUST assume that the next REQUEST, CANCEL, ERROR, and PAYLOAD frames have an implied position commencing from the last implied positions
-    * MAY retransmit *all* REQUEST, CANCEL, ERROR, and PAYLOAD frames starting at the RESUME_OK Last Received Position field value from the server.
-    * MAY send an ERROR[CONNECTION_ERROR|CONNECTION_CLOSE] frame indicating the end of the connection and MUST NOT attempt resumption again
+（译者按：小标题 Resume Operation，比较迷惑。。）
 
-Server side resumption operation starts when the client sends a RESUME frame. The operation then proceeds as the following:
+所有发送的 ERROR 帧**必须**(MUST)是 CONNECTION_ERROR 或 REJECTED_RESUME 错误码。
 
-* On receiving a RESUME frame, the server:
-    * MUST send an ERROR[REJECTED_RESUME] frame if the server does not support resuming operation. 
-    * use the RESUME Identification Token field to determine which client the resume pertains to. If the client is identified successfully, resumption MAY be continued. If not identified, then the server MUST send an ERROR[REJECTED_RESUME] frame.
-    * if successfully identified, then the server MAY send a RESUME_OK and then:
-        * MUST assume that the next REQUEST, CANCEL, ERROR, and PAYLOAD frames have an implied position commencing from the last implied positions
-        * MAY retransmit *all* REQUEST, CANCEL, ERROR, and PAYLOAD frames starting at the RESUME Last Received Position field value from the client.
-    * if successfully identified, then the server MAY send an ERROR[REJECTED_RESUME] frame if the server can not resume operation given the value of RESUME Last Received Position if the position is not one it deems valid to resume operation from or other extenuating circumstances.
+客户端在希望尝试恢复并启动新的传输连接时开始恢复操作。然后进行如下操作：
 
-A Server that receives a RESUME frame after a SETUP frame, SHOULD send an ERROR[CONNECTION_ERROR].
+* 客户端发送 RESUME 帧。在恢复成功之前，客户端**禁止**(MUST NOT)发送任何其他类型的帧。RESUME 身份验证令牌**必须**(MUST)是原先 SETUP 帧中使用的令牌。RESUME 最后接收位置字段**必须**(MUST)是最近一次从服务器成功接收到的隐含位置。
+* 客户端等待来自服务器的 RESUME_OK 或 ERROR[CONNECTION_ERROR|REJECTED_RESUME] 帧。
+* 如果收到一个 ERROR[REJECTED_RESUME] 帧，客户端**禁止**(MUST NOT)再次尝试恢复。
+* 如果收到一个 RESUME_OK 帧，客户端：
+  * **必须**(MUST)假定接下来的 REQUEST、CANCEL、ERROR 和 PAYLOAD 帧的隐含位置从最后隐含位置开始
+  * **可以**(MAY)重传从服务器接收到的 RESUME_OK 最后接收位置之后的*全部* REQUEST，CANCEL，ERROR 和 PAYLOAD 帧。
+  * **可以**(MAY)发送一个 ERROR[CONNECTION_ERROR|CONNECTION_CLOSE] 帧，指示连接结束，并且**禁止**(MUST NOT)再次尝试恢复
 
-A Server that receives a RESUME frame after a previous RESUME frame, SHOULD send an ERROR[CONNECTION_ERROR].
+当客户端发送一个 RESUME 帧时，服务器开始恢复操作。然后进行如下操作：
 
-Leasing semantics are NOT assumed to carry over from previous connections when resuming. LEASE semantics MUST be restarted upon a new connection by sending a LEASE frame from the server.
+* 如果收到一个 RESUME 帧，服务器:
+    * 如果服务器不支持恢复，**必须**(MUST)发送一个 ERROR[REJECTED_RESUME] 帧。
+    * 使用 RESUME 身份验证令牌字段来确定恢复操作属于哪个客户端。如果客户端身份验证成功，**可以**(MAY)继续恢复。如果身份验证不通过，那么服务器**必须**(MUST)发送一个 ERROR[REJECTED_RESUME] 帧。
+    * 如果身份验证成功，那么服务器**可以**(MAY)发送一个 RESUME_OK，然后:
+      * **必须**(MUST)假定接下来的 REQUEST、CANCEL、ERROR和 PAYLOAD 的隐含位置从最后隐含位置开始
+      * **可以**(MAY)重传从客户端接收到的 RESUME 最后接收位置之后的*全部* REQUEST，CANCEL，ERROR 和 PAYLOAD 帧。
+    * 如果身份验证成功，但是由于服务器认为给定的 RESUME 最后接收位置不能用于恢复，或由于其他情有可原的状况，服务器无法恢复，那么服务器**可以**(MAY)发送一个 ERROR[REJECTED_RESUME] 帧
 
-<a name="frame-resume"></a>
-#### RESUME Frame (0x0D)
+如果服务器收到 SETUP 帧后又收到 RESUME 帧，则**应该**(SHOULD)发送一个 ERROR[CONNECTION_ERROR]。
 
-The general format for a Resume frame is given below.
+如果服务器先前收到 RESUME 帧后又收到 RESUME 帧，则**应该**(SHOULD)发送一个 ERROR[CONNECTION_ERROR]。
 
-RESUME frames MUST always use Stream ID 0 as they pertain to the connection.
+在恢复连接时，**不**假定租约语义从以前的连接中继承。在一个新的连接上，必须通过从服务器发送一个 LEASE 帧来重新启动 LEASE 语义。
+
+<a id="frame-resume"></a>
+#### RESUME 帧 (0x0D) （恢复帧）
+
+Resume 帧的一般格式如下所示。
+
+RESUME 帧**必须**(MUST)始终使用流ID 0，因为它们关乎整个连接。
 
 ```
      0                   1                   2                   3
      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                         Stream ID = 0                         |
+    |                           流ID = 0                            |
     +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|0|    Flags      |
+    |  帧类型   |0|0|    标志位      |
     +-------------------------------+-------------------------------+
-    |        Major Version          |         Minor Version         |
+    |           主版本号             |          次要版本号           |
     +-------------------------------+-------------------------------+
-    |         Token Length          | Resume Identification Token  ...
+    |           令牌长度             |  令牌  ...
     +---------------------------------------------------------------+
     |0|                                                             |
-    +                 Last Received Server Position                 +
+    +                      最后接收服务器位置 63位                    +
     |                                                               |
     +---------------------------------------------------------------+
     |0|                                                             |
-    +                First Available Client Position                +
-    |                                                               |
-    +---------------------------------------------------------------+
-```
-
-* __Frame Type__: (6 bits) 0x0D
-* __Major Version__: (16 bits = max value 65,535) Unsigned 16-bit integer of Major version number of the protocol.
-* __Minor Version__: (16 bits = max value 65,535) Unsigned 16-bit integer of Minor version number of the protocol.
-* __Resume Identification Token Length__: (16 bits = max value 65,535) Unsigned 16-bit integer of Resume Identification Token Length in bytes. 
-* __Resume Identification Token__: Token used for client resume identification. Same Resume Identification used in the initial SETUP by the client.
-* __Last Received Server Position__: (63 bits = max value 2^63-1) Unsigned 63-bit long of the last implied position the client received from the server.
-* __First Available Client Position__: (63 bits = max value 2^63-1) Unsigned 63-bit long of the earliest position that the client can rewind back to prior to resending frames.
-
-<a name="frame-resume-ok"></a>
-#### RESUME_OK Frame (0x0E)
-
-The general format for a Resume OK frame is given below.
-
-RESUME OK frames MUST always use Stream ID 0 as they pertain to the connection.
-
-```
-     0                   1                   2                   3
-     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |                         Stream ID = 0                         |
-    +-----------+-+-+---------------+-------------------------------+
-    |Frame Type |0|0|    Flags      |
-    +-------------------------------+-------------------------------+
-    |0|                                                             |
-    +               Last Received Client Position                   +
+    +                      最早可用客户端位置 63位                    +
     |                                                               |
     +---------------------------------------------------------------+
 ```
 
-* __Frame Type__: (6 bits) 0x0E
-* __Last Received Client Position__: (63 bits = max value 2^63-1) Unsigned 63-bit long of the last implied position the server received from the client.
+* __帧类型__：0x0D
+* __主版本号__：同 SETUP
+* __次要版本号__：同 SETUP
+* __恢复操作身份验证令牌长度__
+* __恢复操作身份验证令牌__：用于客户端恢复时身份验证的令牌。与客户端在最初的 SETUP 中使用的 Resume 身份相同。
+* __最后接收服务器位置__：（63位，最大值 2^63-1）无符号63位整数，客户端从服务器接收到的最后隐含位置。
+* __最早可用客户端位置__：（63位，最大值 2^63-1）无符号63位整数，客户端可以倒回并重传帧的最早位置。
 
-#### Keepalive Position Field
+<a id="frame-resume-ok"></a>
+#### RESUME_OK 帧 (0x0E) （恢复成功帧）
 
-Keepalive frames include the implied position of the client (or server). When sent, they act as a means for the other end of the connection to know the position of the other side.
+Resume OK 帧的一般格式如下所示。
 
-This information MAY be used to update state for possible retransmission, such as trimming a retransmit buffer, or possible associations with individual stream status.
+RESUME OK 帧**必须**(MUST)始终使用流ID 0，因为它们关乎整个连接。
 
-### Identification Token Handling
+```
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                           流ID = 0                            |
+    +-----------+-+-+---------------+-------------------------------+
+    |  帧类型   |0|0|    标志位      |
+    +-------------------------------+-------------------------------+
+    |0|                                                             |
+    +                     最后接收客户端位置 63位                     +
+    |                                                               |
+    +---------------------------------------------------------------+
+```
 
-The requirements for the Resume Identification Token are implementation dependent. However, some guidelines and considerations are:
+* __帧类型__：0x0E
+* __最后接收客户端位置__：（63位，最大值 2^63-1）无符号63位整数，服务器从客户端接收到的最后隐含位置。
 
-* Tokens may be generated by the client.
-* Tokens may be generated outside the client and the server and managed externally to the protocol.
-* Tokens should uniquely identify a connection on the server. The server should not assume a generation method of the token and should consider the token opaque. This allows a client to be compatible with any RSocket implementation that supports resuming operation and allows the client full control of Identification Token generation.
-* Tokens MUST be valid for the lifetime of an individual RSocket including possible resumption.
-* A server should not accept a SETUP with a Token that is currently already being used
-* Tokens should be resilient to replay attacks and thus should only be valid for the lifetime of an individual connection
-* Tokens should not be predictable by an attacking 3rd party
+#### Keepalive 位置字段
 
-## Connection Establishment
+Keepalive 帧包含客户端或服务器的隐含位置。当发送时，它们作为连接的一端了解另一端位置的一种手段。
 
-__NOTE__: The semantics are similar to [TLS False Start](https://tools.ietf.org/html/draft-bmoeller-tls-falsestart-00).
+这个信息可以用于更新可行重传的状态，比如清理重传缓冲区，或可能存在的与单独的流状态的关联。
 
-Immediately upon successful connection, the client MUST send either a SETUP or RESUME frame with
-Stream ID of 0. Any other frame received that is NOT a SETUP|RESUME frame or a SETUP|RESUME frame with
-a Stream ID > 0, MUST cause the server to send an ERROR[INVALID_SETUP] and close the connection. 
+### 处理身份验证令牌
 
-See [Resume Operation](#resume-operation) for more information about resuming. The rest of this section assumes use of SETUP for establishing a connection.
+身份验证令牌的需求取决于实现。然而，有一些指导方针和注意事项:
 
-The client-side Requester can inform the server-side Responder as to whether it will
-honor LEASEs or not based on the presence of the __L__ flag in the SETUP frame.
+* 令牌可以由客户端生成。
+* 令牌可以在客户端和服务器之外生成，并在协议外部进行管理。
+* 令牌应该独一无二地标识服务器上的一条连接。服务器不应该假定令牌的生成方法，并且应该认为令牌是不透明的(opaque)。这一点让客户端可以与任何支持恢复的 RSocket 实现兼容，并允许客户端完全控制身份验证令牌的生成。
+* 令牌**必须**(MUST)在单个 RSocket 的生命周期内有效，包括可能遇到的恢复。
+* 服务器不应该接受带有当前已被使用的令牌的 SETUP
+* 令牌应该能够抵御重放攻击，因此应该只在单个连接的生命周期内有效
+* 令牌不应该能被第三方预测
 
-The client-side Requester that has NOT set the __L__ flag in the SETUP frame may send
-requests immediately if it so desires without waiting for a LEASE from the server.
 
-The client-side Requester that has set the __L__ flag in the SETUP frame MUST wait
-for the server-side Responder to send a LEASE frame before it can send requests.
+## <a id="connection-establishment"></a>连接建立
 
-If the server accepts the contents of the SETUP frame, it MUST send a LEASE frame if
-the SETUP frame set the __L__ flag. The server-side Requester may send requests
-immediately upon receiving a SETUP frame that it accepts if the __L__ flag is not set in the SETUP frame.
+__注__：语义与 [TLS False Start](https://tools.ietf.org/html/draft-bmoeller-tls-falsestart-00) 相似.
 
-If the server does NOT accept the contents of the SETUP frame, the server MUST send
-back an ERROR[INVALID_SETUP|UNSUPPORTED_SETUP] and then close the connection.
+一旦连接成功，客户端必须立即发送一个流ID为0的 SETUP 或 RESUME 帧。如果服务器接收到的不是 SETUP|RESUME 帧或接收到流ID大于0的 SETUP|RESUME 帧，**必须**(MUST)导致服务器发送 ERROR[INVALID_SETUP] 并关闭连接。
 
-The server-side Requester mirrors the LEASE requests of the client-side Requester. If a client-side
-Requester sets the __L__ flag in the SETUP frame, the server-side Requester MUST wait for a LEASE
-frame from the client-side Responder before it can send a request. The client-side Responder MUST
-send a LEASE frame after a SETUP frame with the __L__ flag set.
+有关恢复的更多信息，请参见[恢复运行](#resume-operation)。本节的其余部分假设使用 SETUP 来建立连接。
 
-A client assumes a SETUP is accepted if it receives a response to a request, a LEASE
-frame, or if it sees a REQUEST type.
+客户端请求者可以利用 SETUP 帧的**L**标志通知服务器端响应者是否将履行租约。
 
-A client assumes a SETUP is rejected if it receives an ERROR.
+没有在 SETUP 帧中设置**L**标志的客户端请求者如果想要立即发送请求，那么它可以立即发送，而不需要等待来自服务器的 LEASE。
 
-Until connection establishment is complete, a Requester MUST NOT send any Request frames.
+在 SETUP 帧中设置了**L**标志的客户端请求者在可以发送请求之前**必须**(MUST)等待服务器响应者发送一个 LEASE 帧。
 
-Until connection establishment is complete, a Responder MUST NOT emit any PAYLOAD frames.
+如果服务器认可 SETUP 帧的内容而且 SETUP 帧设置了**L**标志，那么服务器必须发送一个 LEASE 帧。如果 SETUP 帧没有设置**L**标志，服务器请求者可以在接收到它认可的 SETUP 帧后立即发送请求。
 
-### Negotiation
+如果服务器不认可 SETUP 帧的内容，服务器**必须**(MUST)回复一个 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP]，然后关闭连接。
 
-The assumption is that the client will be dictating to the server what it desires to do. The server will decide to support
-that SETUP (accept it) or not (reject it). The ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP] error code indicates the reason for the rejection.
+服务器请求者的表现类似于客户端请求者的 LEASE 请求。如果客户端请求者在 SETUP 帧中设置了**L**标志，服务器请求者在可以发送请求之前**必须**(MUST)等待来自客户端响应者的 LEASE 帧。客户端响应器在发送了一个设置了**L**标志的 SETUP 帧之后**必须**(MUST)再发送一个 LEASE 帧。
 
-### Sequences without LEASE
+如果客户端收到对请求的响应、一个 LEASE 帧，或者看到一个 REQUEST 类型，那么客户端就假定 SETUP 被接受了。
 
-The possible sequences without LEASE are below.
+如果客户端收到一个 ERROR，则假定 SETUP 被拒绝。
 
-1. Client-side Request, Server-side __accepts__ SETUP
-    * Client connects & sends SETUP & sends REQUEST
-    * Server accepts SETUP, handles REQUEST, sends back normal sequence based on REQUEST type
-1. Client-side Request, Server-side __rejects__ SETUP
-    * Client connects & sends SETUP & sends REQUEST
-    * Server rejects SETUP, sends back ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP], closes connection
-1. Server-side Request, Server-side __accepts__ SETUP
-    * Client connects & sends SETUP
-    * Server accepts SETUP, sends back REQUEST type
-1. Server-side Request, Server-side __rejects__ SETUP
-    * Client connects & sends SETUP
-    * Server rejects SETUP, sends back ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP], closes connection
+在连接建立完成之前，请求者**禁止**(MUST NOT)发送任何请求帧。
 
-### Sequences with LEASE
+在连接建立完成之前，响应者**禁止**(MUST NOT)发出任何负载帧。
 
-The possible sequences with LEASE are below.
+### 协商
 
-1. Client-side Request, Server-side __accepts__ SETUP
-    * Client connects & sends SETUP with __L__ flag
-    * Server accepts SETUP, sends back LEASE frame
-    * Client-side sends REQUEST
-1. Client-side Request, Server-side __rejects__ SETUP
-    * Client connects & sends SETUP with __L__ flag
-    * Server rejects SETUP, sends back ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP], closes connection
-1. Server-side Request, Server-side __accepts__ SETUP
-    * Client connects & sends SETUP with __L__ flag
-    * Server accepts SETUP, sends back LEASE frame
-    * Client sends LEASE frame
-    * Server sends REQUEST
-1. Server-side Request, Server-side __rejects__ SETUP
-    * Client connects & sends SETUP with __L__ flag
-    * Server rejects SETUP, sends back ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP], closes connection
+假定客户端将向服务器指示它想要做的事情。服务器将决定是否支持该 SETUP（接受它或拒绝它）。ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP] 的错误码表示拒绝的原因。
 
-## Fragmentation And Reassembly
+### 没有 LEASE 时的顺序
 
-PAYLOAD frames and all REQUEST frames may represent a large object and MAY need to be fragmented to fit within the Frame Data size. When this occurs, the __F__ flag indicates if more fragments follow the current frame (or not).
+下面是没有 LEASE 时可能的顺序。
 
-Fragmentation does not change the request(n) or lease counts. In other words, a fragmented PAYLOAD frame counts as a single request(n) credit, and a request counts against a single lease count, regardless of how many fragments the frame is split into.
+1. 客户端请求，服务器**接受** SETUP
+    * 客户端连接 & 发送 SETUP & 发送 REQUEST
+    * 服务器接受 SETUP，处理 REQUEST，根据请求类型回复正常序列
+2. 客户端请求，服务器**拒绝** SETUP
+    * 客户端连接 & 发送 SETUP & 发送 REQUEST
+    * 服务器拒绝 SETUP，回复 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP]，关闭连接
+3. 服务器请求，服务器**接受** SETUP
+    * 客户端连接 & 发送 SETUP
+    * 服务器接受 SETUP，回复 REQUEST
+4. 服务器请求，服务器**拒绝** SETUP
+    * 客户端连接 & 发送 SETUP
+    * 服务器拒绝 SETUP，回复 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP]，关闭连接
 
-#### PAYLOAD Frame
+### 有 LEASE 时的顺序
 
-When a PAYLOAD frame needs to be fragmented, a sequence of PAYLOAD frames is delivered using the (F)ollows flag.
+下面是有 LEASE 时可能的顺序。
 
-When a PAYLOAD is fragmented, the Metadata MUST be transmitted completely before the Data. 
+1. 客户端请求，服务器**接受** SETUP
+    * 客户端连接 & 发送带有**L**标志的 SETUP
+    * 服务器接受 SETUP，回复 LEASE 帧
+    * 客户端发送 REQUEST
+2. 客户端请求，服务器**拒绝** SETUP
+    * 客户端连接 & 发送带有**L**标志的 SETUP
+    * 服务器拒绝 SETUP，回复 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP]，关闭连接
+3. 服务器请求，服务器**接受** SETUP
+    * 客户端连接 & 发送带有**L**标志的 SETUP
+    * 服务器接收 SETUP，回复 LEASE 帧
+    * 客户端发送 LEASE 帧
+    * 服务器发送 REQUEST
+4. 服务器请求，服务器**拒绝** SETUP
+    * 客户端连接 & 发送带有**L**标志的 SETUP
+    * 服务器拒绝 SETUP，回复 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP]，关闭连接
 
-For example, a single PAYLOAD with 20MB of Metadata and 25MB of Data that is fragmented into 3 frames:
+
+## <a id="fragmentation-and-reassembly"></a>分片(Fragmentation)与重组(Reassembly)
+
+负载帧和所有类型的请求帧可能表示了一个大体积的对象，并且**可能**(MAY)需要分片以适应帧数据尺寸。出现这种情况时，**F**标志指示了是否有更多的片段跟随当前帧。
+
+分片不会改变 request(n) 或租约计数。换句话说，一个分成多片的 PAYLOAD 帧算作一个 request(n) 信用，一个请求算作一个租约计数，而不管帧被分成多少个片段。
+
+#### PAYLOAD 帧
+
+当一个 PAYLOAD 帧需要被分片时，使用跟随(**F**)标志发送一个 PAYLOAD 帧序列。
+
+如果一个 PAYLOAD 帧被分片，元数据**必须**(MUST)完全在数据之前传输。
+
+例如，一个包含 20MB 元数据和 25MB 数据的 PAYLOAD 被分割成3帧：
 
 ```
 -- PAYLOAD frame 1
@@ -981,15 +949,15 @@ Frame length = 13MB
 13MB of Data
 ```
 
-If the sender (Requester or Responder) wants to cancel sending a fragmented sequence, it MAY send a CANCEL frame without finishing delivery of the fragments. 
+如果发送方（请求者或响应者）想要取消发送一个分片序列，它**可以**(MAY)在没有发送完所有片段的情况下发送一个 CANCEL 帧。
 
-#### REQUEST Frames
+#### 各种 REQUEST 帧
 
-When REQUEST_RESPONSE, REQUEST_FNF, REQUEST_STREAM, or REQUEST_CHANNEL frames need to be fragmented, the first frame is the REQUEST_* frame with the (F)ollows flag set, followed by a sequence of PAYLOAD frames.
+当 REQUEST_RESPONSE、REQUEST_FNF、REQUEST_STREAM 或 REQUEST_CHANNEL 帧需要分片时，第一帧是设置了**F**标志的 REQUEST_* 帧，后面跟着一串 PAYLOAD 帧。
 
-When fragmented, the Metadata MUST be transmitted completely before the Data. 
+如果分片，元数据**必须**(MUST)在完全数据之前传输。
 
-For example, a single PAYLOAD with 20MB of Metadata and 25MB of Data that is fragmented into 3 frames:
+例如，一个包含 20MB 元数据和 25MB 数据的 PAYLOAD 被分割成3帧：（译者按：此处 PAYLOAD 疑有讹误）
 
 ```
 -- REQUEST_RESPONSE frame 1
@@ -1019,241 +987,234 @@ Frame length = 13MB
 13MB of Data
 ```
 
-If the Requester wants to cancel sending a fragmented sequence, it MAY send a CANCEL frame without finishing delivery of the fragments. 
+如果发送方（请求者）想要取消发送一个分片序列，它**可以**(MAY)在没有发送完所有片段的情况下发送一个 CANCEL 帧。
 
-## Stream Sequences and Lifetimes
 
-Streams exists for a specific period of time. So an implementation may assume that Stream IDs are valid for a finite period of time. This period of time is bound by either a) the lifetime of the underlying transport protocol connection, or b) the lifetime of a session if resumability is used to extend the session across multiple transport protocol connections. Beyond that, each interaction pattern imposes lifetime based on a sequence of interactions between Requester and Responder.
+## <a id="stream-sequences-and-lifetimes"></a>流顺序和生命周期
 
-In the section below, "RQ -> RS" refers to Requester sending a frame to a Responder. And "RS -> RQ" refers to Responder sending
-a frame to a Requester.
+流只存在一段特定的时间。因此，实现可能会假定流ID在有限的时间内有效。这段时间受以下两种情况的约束：一是受底层传输协议连接的生命周期的约束；二是如果使用恢复功能把会话扩展到多个传输协议连接上，则受会话的生命周期的约束。除此之外，每个交互模式都根据请求者和响应者之间的某种交互顺序来推行生命周期。
 
-In the section below, "*" refers to 0 or more and "+" refers to 1 or more.
+在下面的部分，“RQ -> RS”指的是请求者向响应者发送帧。“RS -> RQ”是指响应者向请求者发送帧。
 
-Once a stream has "terminated", the Stream ID can be "forgotten" by the Requester and Responder, but the Stream ID MUST NOT be re-used. See [Stream Identifier](#stream-identifiers) for more information.
+在下面的部分，“*”表示0或大于0，“+”表示1或大于1。
+
+一旦流“终止”，流ID可以被请求者和响应者“遗忘”，但流ID**禁止**(MUST NOT)被重新使用。参见[流标识符](#stream-identifiers)了解更多信息。
 
 <a name="stream-sequences-request-response"></a>
-### Request Response
+### 请求 响应
 
 1. RQ -> RS: REQUEST_RESPONSE
-1. RS -> RQ: PAYLOAD with COMPLETE
+2. RS -> RQ: PAYLOAD with COMPLETE
 
-or
-
-1. RQ -> RS: REQUEST_RESPONSE
-1. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
-
-or
+或
 
 1. RQ -> RS: REQUEST_RESPONSE
-1. RQ -> RS: CANCEL
+2. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
 
-Upon sending a response, the stream is terminated on the Responder.
+或
 
-Upon receiving a CANCEL, the stream is terminated on the Responder and the response SHOULD not be sent.
+1. RQ -> RS: REQUEST_RESPONSE
+2. RQ -> RS: CANCEL
 
-Upon sending a CANCEL, the stream is terminated on the Requester.
+一旦发送响应，响应者上的流终止。
 
-Upon receiving a COMPLETE or ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID], the stream is terminated on the Requester.
+一旦接收到 CANCEL，响应者上的流终止，响应**不应该**(SHOULD not)被发送。
 
-<a name="stream-sequences-fire-and-forget"></a>
-### Request Fire-n-Forget
+一旦发送 CANCEL，请求者上的流终止。
+
+一旦接收到 COMPLETE 或 ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]，请求者上的流终止。
+
+<a id="stream-sequences-fire-and-forget"></a>
+### 即发即弃
 
 1. RQ -> RS: REQUEST_FNF
 
-Upon reception, the stream is terminated by the Responder.
+一旦接收到，流被响应者终止。
 
-Upon being sent, the stream is terminated by the Requester.
+一旦发送，流被请求者终止。
 
-REQUEST_FNF are assumed to be best effort and MAY not be processed due to: (1) SETUP rejection, (2) mis-formatting, (3) etc.
+假定 REQUEST_FNF 尽力而为即可，并且可能由于以下原因不被处理：（1）SETUP 拒绝；（2）格式错误；（3）其他。
 
-<a name="stream-sequences-request-stream"></a>
-### Request Stream
-
-1. RQ -> RS: REQUEST_STREAM
-1. RS -> RQ: PAYLOAD*
-1. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
-
-or
+<a id="stream-sequences-request-stream"></a>
+### 请求 流
 
 1. RQ -> RS: REQUEST_STREAM
-1. RS -> RQ: PAYLOAD*
-1. RS -> RQ: COMPLETE
+2. RS -> RQ: PAYLOAD*
+3. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
 
-or
+或
 
 1. RQ -> RS: REQUEST_STREAM
-1. RS -> RQ: PAYLOAD*
-1. RQ -> RS: CANCEL
+2. RS -> RQ: PAYLOAD*
+3. RS -> RQ: COMPLETE
 
-At any time, the Requester may send REQUEST_N frames.
+或
 
-Upon receiving a CANCEL, the stream is terminated on the Responder.
+1. RQ -> RS: REQUEST_STREAM
+2. RS -> RQ: PAYLOAD*
+3. RQ -> RS: CANCEL
 
-Upon sending a CANCEL, the stream is terminated on the Requester.
+在任何时候，请求者都可能发送 REQUEST_N 帧。
 
-Upon receiving a COMPLETE or ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID], the stream is terminated on the Requester.
+一旦接收到 CANCEL，响应者上的流终止。
 
-Upon sending a COMPLETE or ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID], the stream is terminated on the Responder.
+一旦发送 CANCEL，请求者上的流终止。
 
-<a name="stream-sequences-channel"></a>
-### Request Channel
+一旦接收到 COMPLETE 或 ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]，请求者上的流终止。
 
-#### COMPLETE from Requester and Responder
+一旦发送 COMPLETE 或 ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]，响应者上的流终止。
+
+<a id="stream-sequences-channel"></a>
+### 请求 通道
+
+#### COMPLETE 来自请求者和响应者
 
 1. RQ -> RS: REQUEST_CHANNEL
-1. RQ -> RS: PAYLOAD*
-1. RQ -> RS: COMPLETE
+2. RQ -> RS: PAYLOAD*
+3. RQ -> RS: COMPLETE
 
-  intermixed with 
+  混杂了
   
 1. RS -> RQ: PAYLOAD*
-1. RS -> RQ: COMPLETE
+2. RS -> RQ: COMPLETE
 
-#### Error from Requester, Responder terminates
-
-1. RQ -> RS: REQUEST_CHANNEL
-1. RQ -> RS: PAYLOAD*
-1. RQ -> RS: ERROR[APPLICATION_ERROR]
-
-  intermixed with 
-  
-1. RS -> RQ: PAYLOAD*
-
-#### Error from Requester, Responder already Completed
+#### Error 来自请求者，响应者终止
 
 1. RQ -> RS: REQUEST_CHANNEL
-1. RQ -> RS: PAYLOAD*
-1. RQ -> RS: ERROR[APPLICATION_ERROR]
+2. RQ -> RS: PAYLOAD*
+3. RQ -> RS: ERROR[APPLICATION_ERROR]
 
-  intermixed with 
-  
-1. RS -> RQ: PAYLOAD*
-1. RS -> RQ: COMPLETE
-
-#### Error from Responder, Requester terminates
-
-1. RQ -> RS: REQUEST_CHANNEL
-1. RQ -> RS: PAYLOAD*
-
-  intermixed with 
-  
-1. RS -> RQ: PAYLOAD*
-1. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
-
-#### Error from Responder, Requester already Completed
-
-1. RQ -> RS: REQUEST_CHANNEL
-1. RQ -> RS: PAYLOAD*
-1. RQ -> RS: COMPLETE
-
-  intermixed with 
-  
-1. RS -> RQ: PAYLOAD*
-1. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
-
-#### Cancel from Requester, Responder terminates
-
-1. RQ -> RS: REQUEST_CHANNEL
-1. RQ -> RS: PAYLOAD*
-1. RQ -> RS: COMPLETE
-1. RQ -> RS: CANCEL
-
-  intermixed with 
+  混杂了
   
 1. RS -> RQ: PAYLOAD*
 
+#### Error 来自请求者，响应者已经完成
 
-At any time, a Requester may send PAYLOAD frames.
+1. RQ -> RS: REQUEST_CHANNEL
+2. RQ -> RS: PAYLOAD*
+3. RQ -> RS: ERROR[APPLICATION_ERROR]
 
-At any time, a Requester, as well as a Responder, may send REQUEST_N frames.
+  混杂了 
+  
+1. RS -> RQ: PAYLOAD*
+2. RS -> RQ: COMPLETE
 
-An implementation MUST only send a single initial REQUEST_CHANNEL frame from the Requester to the Responder. And
-a Responder MUST respond to an initial REQUEST_CHANNEL frame with a REQUEST_N frame.
+#### Error 来自响应者，请求者终止
 
-Upon receiving a CANCEL, the stream is terminated on the Responder.
+1. RQ -> RS: REQUEST_CHANNEL
+2. RQ -> RS: PAYLOAD*
 
-Upon sending a CANCEL, the stream is terminated on the Requester.
+  混杂了
+  
+1. RS -> RQ: PAYLOAD*
+2. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
 
-Upon receiving an ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID], the stream is terminated on both Requester and Responder.
+#### Error 来自响应者，请求者已经完成
 
-Upon sending an ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID], the stream is terminated on both the Requester and Responder.
+1. RQ -> RS: REQUEST_CHANNEL
+2. RQ -> RS: PAYLOAD*
+3. RQ -> RS: COMPLETE
 
-In absence of ERROR or CANCEL, the stream is terminated after both Requester and Responder have sent and received COMPLETE.
+  混杂了
+  
+1. RS -> RQ: PAYLOAD*
+2. RS -> RQ: ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]
 
-A Requester may indicate COMPLETE by setting the C bit on either the initial REQUEST_CHANNEL frame, or on the last PAYLOAD frame sent. A Requester MUST NOT send any additional PAYLOAD frames after sending a frame with the C bit set.
+#### Cancel 来自请求者，响应者终止
 
-### Flow Control
+1. RQ -> RS: REQUEST_CHANNEL
+2. RQ -> RS: PAYLOAD*
+3. RQ -> RS: COMPLETE
+4. RQ -> RS: CANCEL
 
-There are multiple flow control mechanics provided by the protocol.
+  混杂了 
+  
+1. RS -> RQ: PAYLOAD*
 
-<a name="flow-control-reactive-streams"></a>
-#### Reactive Streams Semantics
+在任何时候，请求者都可能发送 PAYLOAD 帧。
 
-[Reactive Streams](http://www.reactive-streams.org/) semantics are used for flow control of Streams, Subscriptions, and Channels. This is a credit-based model where the Requester grants the Responder credit for the number of PAYLOADs it can send. It is sometimes referred to as "request-n" or "request(n)". 
+在任何时候，请求者和响应者都可能发送 REQUEST_N 帧。
 
-Credits are cumulative. Once credits are granted from Requester to Responder, they cannot be revoked. For example, sending `request(3)` and `request(2)` accumulates to a value of 5, allowing the Responder to send 5 PAYLOADs.
+实现**必须**(MUST)只从请求者发送一个初始 REQUEST_CHANNEL 帧到响应者。响应者**必须**(MUST)用 REQUEST_N 帧响应初始 REQUEST_CHANNEL 帧。
 
-Please note that this explicitly does NOT follow rule number 17 in https://github.com/reactive-streams/reactive-streams-jvm/blob/v1.0.0/README.md#3-subscription-code
+一旦接收到 CANCEL，响应者上的流终止。
 
-While Reactive Streams support a demand of up to 2^63-1, and treats 2^63-1 as a magic number signaling to not track demand, this is not the case for RSocket. RSocket prioritizes byte size and only uses 4 bytes instead of 8 so the magic number is unavailable.
+一旦发送 CANCEL，请求者上的流终止。
 
-The Requester and the Responder MUST respect the Reactive Streams semantics.
+一旦接收到 ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]，请求者和响应者上的流都终止。
 
-e.g. here's an example of a successful stream call with flow-control.
+一旦发送 ERROR[APPLICATION_ERROR|REJECTED|CANCELED|INVALID]，请求者和响应者上的流都终止。
+
+在没有 ERROR 或 CANCEL 的情况下，流在请求者和响应者都发送并接收到 COMPLETE 后终止。
+
+请求者可以通过在初始 REQUEST_CHANNEL 帧或发送的最后一个 PAYLOAD 帧上设置C标志位来指示 COMPLETE。请求者在发送一个设置了C标志位的帧后，**禁止**(MUST NOT)另行发送任何 PAYLOAD 帧。
+
+## <a id="flow-control"></a>流量控制
+
+本协议提供了多种流量控制机制。
+
+<a id="flow-control-reactive-streams"></a>
+#### 反应式流语义
+
+[反应式流](http://www.reactive-streams.org/)语义用于流、订阅和通道的流量控制。这是一个基于信用的模型，其中请求者授予响应者表示可以发送的 PAYLOAD 数量的信用。它有时被称为“request-n”或“request(n)”。
+
+信用是累积的。请求者一旦将信用授予响应者，就不能撤销。例如，发送 `request(3)` 和 `request(2)` 累积成5，让响应者可以发送5个 PAYLOAD。
+
+请注意，这显然不符合第17条规则：https://github.com/reactive-streams/reactive-streams-jvm/blob/v1.0.0/README.md#3-subscription-code
+
+反应式流支持最多 2^63-1 的需求，并将 2^63-1 视为一个表示不跟踪需求的魔法数字，但 RSocket 不是这样。RSocket 优先考虑字节大小，只使用4字节而不是8字节，所以那个魔法数字是不可用的。
+
+请求者和响应者**必须**(MUST)遵守响应流的语义。
+
+例如，这里有一个使用流量控制的成功流调用例子。
 
 1. RQ -> RS: REQUEST_STREAM (REQUEST_N=3)
-1. RS -> RQ: PAYLOAD
-1. RS -> RQ: PAYLOAD
-1. RS -> RQ: PAYLOAD
-1. RS needs to wait for a new REQUEST_N at that point
-1. RQ -> RS: REQUEST_N (N=3)
-1. RS -> RQ: PAYLOAD
-1. RS -> RQ: PAYLOAD with COMPLETE
+2. RS -> RQ: PAYLOAD
+3. RS -> RQ: PAYLOAD
+4. RS -> RQ: PAYLOAD
+5. RS 在这里需要等待一个新的 REQUEST_N
+6. RQ -> RS: REQUEST_N (N=3)
+7. RS -> RQ: PAYLOAD
+8. RS -> RQ: PAYLOAD with COMPLETE
 
-<a name="flow-control-lease"></a>
-#### Lease Semantics
+<a id="flow-control-lease"></a>
+#### 租约语义
 
-The LEASE semantics are to control the number of individual requests (all types) that a Requester may send in a given period.
-The only responsibility the protocol implementation has for the LEASE is to honor it on the Requester side. The Responder application
-is responsible for the logic of generation and informing the Responder it should send a LEASE to the peer Requester.
+LEASE 语义用于控制请求者在给定时间段内可以发送的单个请求（所有类型）的数量。协议实现对 LEASE 的唯一责任是在请求者一方履行它。响应者应用程序负责生成逻辑，并通知响应者它应该向对方请求者发送一个 LEASE。
 
-Requester MUST respect the LEASE contract. The Requester MUST NOT send more than __Number of Requests__ specified
-in the LEASE frame within the __Time-To-Live__ value in the LEASE.
+请求者**必须**(MUST)遵守租约契约。请求者在 LEASE 帧**存活时间**内**禁止**(MUST NOT)发送超过 LEASE 帧中指定的**请求数量**的请求。
 
-A Responder that receives a REQUEST that it can not honor due to LEASE restrictions MUST respond with an ERROR[REJECTED]. This includes an initial LEASE sent as part of [Connection Establishment](#connection-establishment).
+响应者接收到由于租约限制而无法执行的 REQUEST 时，**必须**(MUST)回复一个 ERROR[REJECTED]。这包括作为[连接建立](#connection-establishment)的一部分发送的初始 LEASE。
 
-<a name="flow-control-qos"></a>
-#### QoS and Prioritization
+<a id="flow-control-qos"></a>
+#### QoS 和优先级(Prioritization)
 
-Quality of Service and Prioritization of streams are considered application or network layer concerns and are better dealt with at those layers. The metadata capabilities, including METADATA_PUSH, are tools that applications can use for effective prioritization.
+流的服务质量(Quality of Service)和优先级被认为是应用层或网络层的关注点，并且在这些层中得到更好的处理。元数据功能，包括 METADATA_PUSH，是应用程序可以用来有效地确定优先级的工具。
 
-Within a single stream, the frames have to be processed in order, but this is not the case between different streams. Frames with *Stream ID 0* **SHOULD** have a higher priority (*this is implementation specific*), since all those frames may impact the performance of the system.
+在单个流中，帧必须按顺序处理，但不同流之间的情况并非如此。流ID为0的帧**应该**(**SHOULD**)具有更高的优先级（*这是实现定义的*），因为所有这些帧都可能影响系统的性能。
 
-DiffServ via IP QoS are best handled by the underlying network layer protocols.
+通过 IP QoS 的 DiffServ 最好由底层网络层协议处理。
 
-### Handling the Unexpected
+<a id="handling-the-unexpected"></a>
+## 应对意外情况
 
-This protocol attempts to be very lenient in processing of received frames and SHOULD ignore
-conditions that do not make sense given the current context. Clarifications are given below:
+这个协议试图非常宽松地处理接收到的帧，并且**应该**(SHOULD)忽略当前上下文中没有意义的情况。阐明如下：
 
-1. TCP half-open connections (and WebSockets) or other dead transports are detectable by lack of KEEPALIVE frames as specified
-under [Keepalive Frame](#frame-keepalive). The decision to close a connection due to inactivity is the applications choice.
-1. Request keepalive and timeout semantics are the responsibility of the application.
-1. Lack of REQUEST_N frames that stops a stream is an application concern and SHALL NOT be handled by the protocol.
-1. Lack of LEASE frames that stops new Requests is an application concern and SHALL NOT be handled by the protocol.
-1. If a PAYLOAD for a REQUEST_RESPONSE is received that does not have a COMPLETE flag set, the implementation MUST
-assume it is set and act accordingly.
-1. Reassembly of PAYLOADs and REQUEST_CHANNELs MUST assume the possibility of an infinite stream.
-1. A PAYLOAD with both __F__ and __C__ flags set, implicitly ignores the __F__ flag.
-1. Flag bits not specified for a particular frame MUST be ignored. 
-1. All other received frames that are not accounted for in previous sections MUST be ignored. Thus, for example:
-    1. Receiving a Request frame on a Stream ID that is already in use MUST be ignored.
-    1. Receiving a CANCEL on an unknown Stream ID (including 0) MUST be ignored.
-    1. Receiving an ERROR on an unknown Stream ID MUST be ignored.
-    1. Receiving a PAYLOAD on an unknown Stream ID (including 0) MUST be ignored.
-    1. Receiving a METADATA_PUSH with a non-0 Stream ID MUST be ignored.
-	1. A server MUST ignore a SETUP frame after it has accepted a previous SETUP.
-	1. A server MUST ignore an ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP|REJECTED_RESUME] frame.
-	1. A client MUST ignore an ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP|REJECTED_RESUME] frame after it has completed connection establishment.
-	1. A client MUST ignore a SETUP frame.
+1. TCP 半开连接（和WebSockets）或其他死传输是通过 KEEPALIVE 帧的缺失来检测的。由于连接不活动而决定关闭连接是应用程序的选择。
+2. 请求存活检测和超时语义是应用程序的责任。
+3. 缺少 REQUEST_N 帧而导致的流终止是应用程序关注的问题，协议**禁止**(SHALL NOT)处理这个问题。
+4. 缺少 LEASE 帧而导致新的请求被阻止是应用程序关注的问题，协议**禁止**(SHALL NOT)处理这个问题。
+5. 如果 REQUEST_RESPONSE 对应接收到的 PAYLOAD 没有设置 COMPLETE 标志，则实现**必须**(MUST)假定它是已设置的并相应地执行操作。
+6. PAYLOAD 和 REQUEST_CHANNEL 的重组**必须**(MUST)假定有可能存在无限流。
+7. 同时设置了**F**和**C**标志的 PAYLOAD 会隐式忽略**F**标志。
+8. 未为特定帧指定的标志位**必须**(MUST)被忽略。
+9. 所有其他接收到的在前面的章节中没有被考虑到的帧，**必须**(MUST)被忽略。因此，例如:
+    1. 接收到一个已经使用中的流ID上的请求帧**必须**(MUST)被忽略。
+    2. 接收到一个未知流ID（包括0）的 CANCEL **必须**(MUST)被忽略。
+    3. 接收到一个未知流ID的 ERROR **必须**(MUST) 被忽略。
+    4. 接收到一个未知流ID（包括0）的 PAYLOAD **必须**(MUST)被忽略。
+    5. 接收到一个流ID不为0的 METADATA_PUSH **必须**(MUST)被忽略。
+    6. 服务器已经接受一个先前的 SETUP 后**必须**(MUST)忽略 SETUP 帧。
+    7. 服务器**必须**(MUST)忽略 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP|REJECTED_RESUME] 帧。
+    8. 客户端在完成连接建立后**必须**(MUST)忽略 ERROR[INVALID_SETUP|UNSUPPORTED_SETUP|REJECTED_SETUP|REJECTED_RESUME] 帧。
+    9. 客户端**必须**(MUST)忽略 SETUP 帧。

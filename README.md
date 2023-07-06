@@ -7,5 +7,6 @@
 （commit 0f6e5554a5f9abbb1c6c7ec2138d2f3e0ab280e8 on 2023-05-02）
 
 ## 进度
+- [协议规范 - Protocol.md](./zh_CN/Protocol.md) *100%*
 - [动机 - Motivations.md](./zh_CN/Motivations.md) *99%*
 - [常见问题 - FAQ.md](./zh_CN/FAQ.md) *99%*
