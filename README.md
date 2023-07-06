@@ -9,10 +9,10 @@
 
 ## 进度
 
-> ### 主体
-> - [协议规范](./zh_CN/Protocol.md) *100%*
-> - [动机](./zh_CN/Motivations.md) *99%*
-> - [常见问题](./zh_CN/FAQ.md) *99%*
+### 主体
+- [协议规范](./zh_CN/Protocol.md) *100%*
+- [动机](./zh_CN/Motivations.md) *99%*
+- [常见问题](./zh_CN/FAQ.md) *99%*
 
-> ### 扩展
-> - [扩展/复合元数据](./zh_CN/Extensions/CompositeMetadata.md) 100%
+### 扩展
+- [扩展/复合元数据](./zh_CN/Extensions/CompositeMetadata.md) 100%
