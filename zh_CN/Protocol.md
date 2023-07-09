@@ -14,7 +14,6 @@ RSocket 假定一种操作范式。这些假定是:
 
 __所有字段的字节顺序都是大端序__。
 
-（译者按：Github 文档比官网文档少了 Status 这个介绍协议现状（版本）的小节：https://rsocket.io/about/protocol#status ）
 
 ## 目录 
 
