@@ -273,8 +273,7 @@ RSocket 实现可以在元数据级别为特定帧提供自己的验证机制。
 | [__RESUME_OK__](#frame-resume-ok)               | 0x0E | __恢复成功(Resume OK)__ ：如果恢复操作可行，则作为 RESUME 的响应发送（可选） |
 | [__EXT__](#frame-ext)                           | 0x3F | __扩展标头(Extension Header)__：用于扩展更多的帧类型和扩展。                 |
 
-<a id="frame-setup"></a>
-### SETUP 帧 (0x01) （建立帧）
+### <a id="frame-setup"></a>SETUP 帧 (0x01) （建立帧）
 
 Setup 帧**必须**(MUST)总是使用流ID 0，因为它们关乎整个连接。
 
